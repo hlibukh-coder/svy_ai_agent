@@ -1,0 +1,13 @@
+version: "3.9"
+
+services:
+  svy_agent:
+    build: .
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/data
+      - ./session:/app/session
+    environment:
+      - DB_PATH=data/history.db
