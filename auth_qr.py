@@ -38,12 +38,16 @@ async def main():
 
     qr_login = await client.qr_login()
 
-    # Print QR in terminal as ASCII
+    # Save QR as image and open it
     qr = qrcode.QRCode()
     qr.add_data(qr_login.url)
     qr.make(fit=True)
-    qr.print_ascii(invert=True)
+    img = qr.make_image(fill_color="black", back_color="white")
+    img.save("session/qr_login.png")
+    print(f"QR code saved to session/qr_login.png — open it and scan!")
     print(f"\nOr open this URL: {qr_login.url}\n")
+    import subprocess
+    subprocess.Popen(["mspaint", "session\\qr_login.png"])
 
     # Wait for scan (up to 60 seconds, auto-refreshes)
     try:

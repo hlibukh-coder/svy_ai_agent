@@ -95,6 +95,44 @@ TOOLS_SCHEMA = [
     {
         "type": "function",
         "function": {
+            "name": "get_order_status",
+            "description": "Получить статус существующего заказа по его ID.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "order_id": {
+                        "type": "string",
+                        "description": "ID заказа из BAS",
+                    }
+                },
+                "required": ["order_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "check_supplier",
+            "description": "Уточнить наличие товара у поставщика, если на складе нет нужного количества.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "product_name": {
+                        "type": "string",
+                        "description": "Название товара",
+                    },
+                    "qty": {
+                        "type": "integer",
+                        "description": "Нужное количество",
+                    },
+                },
+                "required": ["product_name"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "notify_manager",
             "description": (
                 "Передать диалог живому менеджеру. Вызывать при: жалобе, запросе скидки/отсрочки, "
@@ -164,6 +202,19 @@ async def execute_tool(name: str, arguments: dict, sender_phone: str = "") -> st
             city=arguments.get("city", ""),
             items=arguments.get("items", []),
             comment=arguments.get("comment", ""),
+        )
+        return json.dumps(result, ensure_ascii=False)
+
+    elif name == "get_order_status":
+        result = await bas.get_order_status(arguments["order_id"])
+        if not result:
+            return json.dumps({"result": "Заказ не найден"}, ensure_ascii=False)
+        return json.dumps({"order": result}, ensure_ascii=False)
+
+    elif name == "check_supplier":
+        result = await bas.check_supplier(
+            arguments["product_name"],
+            arguments.get("qty", 1),
         )
         return json.dumps(result, ensure_ascii=False)
 

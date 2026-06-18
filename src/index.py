@@ -34,6 +34,9 @@ openai_client = AsyncOpenAI(api_key=OPENAI_API_KEY)
 
 MAX_TOOL_ITERATIONS = 5
 
+# Shared tg_client instance (set in main(), used by send_to_client)
+_tg_client = None
+
 
 async def get_sender_phone(tg_client: TelegramClient, sender: User) -> str:
     """Return phone number of the sender if available."""
@@ -152,6 +155,55 @@ async def handle_message(tg_client: TelegramClient, event):
     await event.respond(reply)
 
 
+async def send_to_client(phone: str, text: str) -> dict:
+    """Send an outbound message to a client by phone number.
+    The text is sent as-is (already composed by caller or AI).
+    Also saves the message to history.
+    """
+    if _tg_client is None:
+        return {"ok": False, "error": "Telegram client not running"}
+
+    # Resolve peer by phone
+    try:
+        entity = await _tg_client.get_entity(phone)
+    except Exception as e:
+        logger.error(f"[SEND] Cannot resolve {phone}: {e}")
+        return {"ok": False, "error": f"Cannot resolve phone: {e}"}
+
+    chat_id = str(entity.id)
+
+    # Fetch client data from BAS to build proper system prompt
+    client_data = await bas.get_client(phone)
+    orders = []
+    if client_data:
+        orders = await bas.get_orders(client_data["id"])
+
+    system_prompt = build_system_prompt(client_data, orders)
+    history = await context.load_history(chat_id, limit=20)
+
+    messages = [{"role": "system", "content": system_prompt}]
+    messages.extend(history)
+    messages.append({"role": "user", "content": text})
+
+    try:
+        reply = await run_openai(messages, phone)
+    except Exception as e:
+        logger.error(f"[SEND] OpenAI error: {e}")
+        return {"ok": False, "error": str(e)}
+
+    await context.save_message(chat_id, "user", text)
+    await context.save_message(chat_id, "assistant", reply)
+
+    try:
+        await _tg_client.send_message(entity, reply)
+        logger.info(f"[SEND] Sent to {phone}: {reply[:80]}")
+    except Exception as e:
+        logger.error(f"[SEND] Failed to send to {phone}: {e}")
+        return {"ok": False, "error": str(e)}
+
+    return {"ok": True, "reply": reply}
+
+
 async def main():
     # Init DB
     os.makedirs(os.path.dirname(os.getenv("DB_PATH", "data/history.db")), exist_ok=True)
@@ -164,7 +216,9 @@ async def main():
         TG_API_HASH,
     )
 
+    global _tg_client
     await tg_client.start(phone=TG_PHONE)
+    _tg_client = tg_client
     logger.info("Telegram client started")
 
     # Pass tg_client to tools for escalation
