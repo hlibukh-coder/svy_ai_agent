@@ -1,9 +1,11 @@
+import json as _json
 import os
 import logging
 import aiohttp
 from urllib.parse import quote
 import yarl
 from src.prompt import MOCK_CLIENTS, MOCK_PRODUCTS
+
 
 logger = logging.getLogger(__name__)
 
@@ -48,16 +50,31 @@ async def get_client(phone: str) -> dict | None:
         logger.info(f"[MOCK] get_client({phone}) -> None")
         return None
 
-    # Try PG first
+    # Try PG first — search by multiple phone variants to handle format differences.
+    # BAS stores phones in various formats: "0504442888", "380504442888", "+380504442888".
+    # We build a list of digit-only variants and try each.
     pool = _get_pool()
     if pool:
         try:
+            import re as _re
+            digits = _re.sub(r"[^\d]", "", phone)
+            # variants: full (380...), local (0...), last 9 digits (504...)
+            variants: list[str] = [digits]
+            if digits.startswith("38") and len(digits) >= 11:
+                variants.append(digits[2:])   # strip country code → "0504442888"
+            if len(digits) >= 9:
+                variants.append(digits[-9:])  # last 9 digits → "504442888"
+
             async with pool.acquire() as conn:
-                row = await conn.fetchrow(
-                    "SELECT ref_key, name, code, phone, company, city FROM clients "
-                    "WHERE phone LIKE $1 AND deleted = false LIMIT 1",
-                    f"%{phone.lstrip('+')}%",
-                )
+                row = None
+                for variant in variants:
+                    row = await conn.fetchrow(
+                        "SELECT ref_key, name, code, phone, company, city FROM clients "
+                        "WHERE phone LIKE $1 AND deleted = false LIMIT 1",
+                        f"%{variant}%",
+                    )
+                    if row:
+                        break
             if row:
                 return {
                     "id": row["ref_key"],
@@ -69,8 +86,8 @@ async def get_client(phone: str) -> dict | None:
         except Exception as e:
             logger.error(f"[PG] get_client error: {e}")
 
-    # Fallback: direct OData
-    url = f"{BAS_URL}/Catalog_Контрагенты?$filter=contains(НомерТелефона,'{phone}')&$top=1&$format=json"
+    # Fallback: direct OData — НомерТелефонаДляПоиска is the correct field (not НомерТелефона)
+    url = f"{BAS_URL}/Catalog_Контрагенты?$filter=contains(НомерТелефонаДляПоиска,'{phone}')&$top=1&$format=json"
     try:
         async with aiohttp.ClientSession(auth=_auth()) as session:
             async with session.get(_url(url), timeout=aiohttp.ClientTimeout(total=10)) as resp:
@@ -83,7 +100,7 @@ async def get_client(phone: str) -> dict | None:
                     "id": item.get("Ref_Key"),
                     "name": item.get("Description", ""),
                     "company": item.get("НаименованиеПолное", ""),
-                    "city": item.get("Город", ""),
+                    "city": "",
                     "phone": phone,
                 }
     except Exception as e:
@@ -109,17 +126,47 @@ async def get_orders(client_id: str) -> list:
         try:
             async with pool.acquire() as conn:
                 rows = await conn.fetch(
-                    "SELECT ref_key, number, date, amount FROM orders "
-                    "WHERE client_ref_key = $1 ORDER BY date DESC LIMIT 10",
+                    """
+                    SELECT o.ref_key, o.number, o.date, o.amount,
+                           coalesce(
+                               json_agg(
+                                   json_build_object('name', p.name, 'qty', oi.qty)
+                                   ORDER BY oi.id
+                               ) FILTER (WHERE oi.id IS NOT NULL),
+                               '[]'::json
+                           ) AS items
+                    FROM orders o
+                    LEFT JOIN order_items oi ON oi.order_ref_key = o.ref_key
+                    LEFT JOIN products p ON p.ref_key = oi.product_ref_key
+                    WHERE o.client_ref_key = $1
+                    GROUP BY o.ref_key, o.number, o.date, o.amount
+                    ORDER BY o.date DESC
+                    LIMIT 10
+                    """,
                     client_id,
                 )
+            def _parse_items(raw) -> list:
+                """asyncpg may return json_agg elements as dicts or JSON strings."""
+                if not raw:
+                    return []
+                result = []
+                for item in raw:
+                    if isinstance(item, dict):
+                        result.append(item)
+                    elif isinstance(item, str):
+                        try:
+                            result.append(_json.loads(item))
+                        except Exception:
+                            pass
+                return result
+
             return [
                 {
                     "id": r["ref_key"],
                     "number": r["number"],
                     "date": str(r["date"])[:10] if r["date"] else "",
                     "total": float(r["amount"] or 0),
-                    "items": [],
+                    "items": _parse_items(r["items"]),
                 }
                 for r in rows
             ]
@@ -154,6 +201,27 @@ async def get_orders(client_id: str) -> list:
 # get_products
 # ---------------------------------------------------------------------------
 
+def _normalize_query(query: str) -> str:
+    """Normalize search query: dimension separators, Latin→Cyrillic lookalikes, plural.
+
+    BAS product names use the Cyrillic 'х' as the dimension separator (e.g. "М8х50").
+    Users/LLM often type "×" (U+00D7), latin "x" or "*" instead — normalize them all.
+    """
+    # Dimension separators → Cyrillic 'х'
+    q = query.replace("×", "х").replace("*", "х")
+    # Latin lookalikes → Cyrillic (e.g. M→М, A→А, x→х — common keyboard mix-up)
+    latin_to_cyr = str.maketrans("ABCEHIMOPTXaBeHiMcopTx", "АВСЕНІМОРТХаВеНіМсорТх")
+    words = q.translate(latin_to_cyr).split()
+    result = []
+    for word in words:
+        # Strip Ukrainian plural suffix: болти→болт, гайки→гайк, шайби→шайб
+        if len(word) > 4 and word[-1] in "иі" and not word[-2:].isdigit():
+            result.append(word[:-1])
+        else:
+            result.append(word)
+    return " ".join(result)
+
+
 async def get_products(query: str) -> list:
     if USE_MOCK:
         q = query.lower()
@@ -168,22 +236,39 @@ async def get_products(query: str) -> list:
     pool = _get_pool()
     if pool:
         try:
+            # Normalize (separators/plural/Latin) then split into tokens.
+            # Fastener names scatter attributes ("Гвинт М6х10 ... А2"), so a single
+            # ILIKE phrase or tsvector rarely matches — instead require EACH token to
+            # appear somewhere in the name (AND of per-token ILIKE).
+            q_norm = _normalize_query(query)
+            tokens = [t for t in q_norm.split() if len(t) >= 2]
+
+            # $1 = raw phrase (for code match + exact-phrase ranking boost)
+            # $2.. = one param per token
+            params: list = [f"%{query}%"]
+            token_conds = []
+            for t in tokens:
+                params.append(f"%{t}%")
+                token_conds.append(f"name ILIKE ${len(params)}")
+            tokens_clause = " AND ".join(token_conds) if token_conds else "name ILIKE $1"
+
+            sql = f"""
+                SELECT ref_key, name, code, price, stock
+                FROM products
+                WHERE deleted = false
+                  AND (
+                    code ILIKE $1
+                    OR ({tokens_clause})
+                  )
+                ORDER BY
+                  -- exact full-phrase matches rank first, then in-stock, then stock
+                  CASE WHEN name ILIKE $1 OR code ILIKE $1 THEN 0 ELSE 1 END,
+                  (stock > 0) DESC,
+                  stock DESC
+                LIMIT 5
+            """
             async with pool.acquire() as conn:
-                rows = await conn.fetch(
-                    """
-                    SELECT ref_key, name, code, price, stock
-                    FROM products
-                    WHERE deleted = false
-                      AND (
-                        code ILIKE $1
-                        OR name ILIKE $1
-                        OR to_tsvector('simple', name) @@ plainto_tsquery('simple', $2)
-                      )
-                    LIMIT 5
-                    """,
-                    f"%{query}%",
-                    query,
-                )
+                rows = await conn.fetch(sql, *params)
             if rows:
                 return [
                     {
@@ -197,8 +282,8 @@ async def get_products(query: str) -> list:
         except Exception as e:
             logger.error(f"[PG] get_products error: {e}")
 
-    # Fallback: direct OData
-    url_article = f"{BAS_URL}/Catalog_Номенклатура?$filter=Код eq '{query}'&$format=json"
+    # Fallback: direct OData — Артикул is the article field (not Код); no price/stock in catalog
+    url_article = f"{BAS_URL}/Catalog_Номенклатура?$filter=Артикул eq '{query}'&$format=json"
     url_name = f"{BAS_URL}/Catalog_Номенклатура?$filter=contains(Description,'{query}')&$top=5&$format=json"
 
     try:
@@ -212,10 +297,10 @@ async def get_products(query: str) -> list:
                         items = data2.get("value", [])
                 return [
                     {
-                        "article": i.get("Код", ""),
+                        "article": i.get("Артикул", ""),
                         "name": i.get("Description", ""),
-                        "price": i.get("ЦенаПродажи", 0),
-                        "stock": i.get("Остаток", 0),
+                        "price": 0,
+                        "stock": 0,
                     }
                     for i in items
                 ]
@@ -238,6 +323,34 @@ async def get_order_status(order_id: str) -> dict | None:
         logger.info(f"[MOCK] get_order_status({order_id}) -> {result}")
         return result
 
+    # Check PG first — covers locally-created AI orders and synced BAS orders
+    pool = _get_pool()
+    if pool:
+        try:
+            async with pool.acquire() as conn:
+                row = await conn.fetchrow(
+                    "SELECT ref_key, number, date, amount FROM orders "
+                    "WHERE ref_key = $1 OR number = $2 LIMIT 1",
+                    order_id, order_id,
+                )
+            if row:
+                is_ai = str(row["number"]).startswith("AI-")
+                return {
+                    "id": row["ref_key"],
+                    "number": row["number"],
+                    "status": "pending_confirmation" if is_ai else "confirmed",
+                    "status_label": "Очікує підтвердження менеджером" if is_ai else "Підтверджено в БАС",
+                    "date": str(row["date"])[:10] if row["date"] else "",
+                    "amount": float(row["amount"] or 0),
+                }
+        except Exception as e:
+            logger.error(f"[PG] get_order_status error: {e}")
+
+    # AI-prefixed orders are local-only — OData won't have them
+    if order_id.startswith("AI-"):
+        return None
+
+    # Fallback: OData (only works for BAS-native orders by guid)
     url = f"{BAS_URL}/Document_ЗаказПокупателя(guid'{order_id}')?$format=json"
     try:
         async with aiohttp.ClientSession(auth=_auth()) as session:
@@ -247,8 +360,8 @@ async def get_order_status(order_id: str) -> dict | None:
                     return None
                 return {
                     "id": data.get("Ref_Key", order_id),
-                    "status": data.get("Статус", ""),
-                    "status_label": data.get("СтатусНаименование", ""),
+                    "status": data.get("Статус", "confirmed"),
+                    "status_label": data.get("СтатусНаименование", "В системі"),
                     "date": data.get("Date", "")[:10],
                     "delivery_date": data.get("ДатаДоставки", None),
                 }
@@ -272,12 +385,15 @@ async def check_supplier(product_name: str, qty: int = 1) -> dict:
             "note": "Є на складі постачальника, термін поставки 3 дні",
         }
 
-    logger.warning(f"check_supplier: no real supplier API configured for '{product_name}'")
+    logger.info(f"check_supplier: escalating to manager for '{product_name}' qty={qty}")
     return {
-        "available": False,
+        "available": None,
         "qty": 0,
         "lead_days": None,
-        "note": "Інформація від постачальника недоступна",
+        "note": (
+            "Онлайн перевірка у постачальника недоступна. "
+            "Передай запит менеджеру через notify_manager — він уточнить наявність та терміни."
+        ),
     }
 
 
@@ -444,35 +560,55 @@ async def create_order(
     items: list,
     comment: str = "",
 ) -> dict:
+    import uuid
+    from datetime import date
+
+    def _num(v) -> float:
+        """Coerce possibly-None / string values to float safely."""
+        try:
+            return float(v or 0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    total = sum(_num(i.get("price")) * _num(i.get("qty")) for i in items)
+
     if USE_MOCK:
         order_id = f"order_mock_{client_id[:8]}"
-        total = sum(i.get("price", 0) * i.get("qty", 0) for i in items)
         logger.info(f"[MOCK] create_order for {client_name} -> {order_id}, total={total}")
         return {"success": True, "order_id": order_id, "total": total}
 
-    payload = {
-        "Контрагент_Key": client_id,
-        "Комментарий": comment,
-        "Товары": [
-            {
-                "Номенклатура_Key": i.get("article"),
-                "Количество": i.get("qty"),
-                "Цена": i.get("price"),
-                "Сумма": i.get("price", 0) * i.get("qty", 0),
-            }
-            for i in items
-        ],
+    # Save to local PG (BAS OData rejects POST due to server-side BeforeWrite handler)
+    local_id = str(uuid.uuid4())
+    local_number = f"AI-{local_id[:8].upper()}"
+
+    pool = _get_pool()
+    if pool:
+        try:
+            async with pool.acquire() as conn:
+                await conn.execute(
+                    """
+                    INSERT INTO orders (ref_key, number, date, client_ref_key, amount)
+                    VALUES ($1, $2, $3, $4, $5)
+                    ON CONFLICT (ref_key) DO NOTHING
+                    """,
+                    local_id, local_number, date.today(), client_id, total,
+                )
+            logger.info(f"[ORDER] Saved locally {local_number} total={total}")
+        except Exception as e:
+            logger.error(f"[ORDER] PG save error: {e}")
+
+    items_str = "; ".join(
+        f"{i.get('name', i.get('article', '?'))} × {i.get('qty')} шт × {i.get('price')} грн"
+        for i in items
+    )
+    logger.info(
+        f"[ORDER] New order {local_number}: client={client_name} phone={client_phone} "
+        f"city={city} total={total} items=[{items_str}] comment={comment}"
+    )
+
+    return {
+        "success": True,
+        "order_id": local_number,
+        "total": total,
+        "note": "Заказ сохранён. Менеджер свяжется для подтверждения.",
     }
-    url = f"{BAS_URL}/Document_ЗаказПокупателя"
-    try:
-        async with aiohttp.ClientSession(auth=_auth()) as session:
-            async with session.post(
-                url,
-                json=payload,
-                timeout=aiohttp.ClientTimeout(total=15),
-            ) as resp:
-                data = await resp.json(content_type=None)
-                return {"success": True, "order_id": data.get("Ref_Key", ""), "total": 0}
-    except Exception as e:
-        logger.error(f"create_order error: {e}")
-        return {"success": False, "error": str(e)}

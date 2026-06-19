@@ -1,7 +1,7 @@
 import json
 import logging
 import os
-from src import bas
+from src import bas, config
 
 logger = logging.getLogger(__name__)
 
@@ -149,6 +149,7 @@ TOOLS_SCHEMA = [
                             "discount_request",
                             "complex_question",
                             "order_issue",
+                            "order_created",
                         ],
                         "description": "Причина эскалации",
                     },
@@ -203,6 +204,32 @@ async def execute_tool(name: str, arguments: dict, sender_phone: str = "") -> st
             items=arguments.get("items", []),
             comment=arguments.get("comment", ""),
         )
+        if result.get("success"):
+            items_lines = "\n".join(
+                "  • " + (i.get("name") or i.get("article", "?"))
+                + f" × {i.get('qty')} шт"
+                + (f" × {i.get('price')} грн" if i.get("price") else "")
+                for i in arguments.get("items", [])
+            )
+            summary = (
+                f"📦 Нове замовлення {result['order_id']}\n"
+                f"Клієнт: {arguments.get('client_name', '—')} "
+                f"{arguments.get('client_phone', sender_phone)}\n"
+            )
+            if arguments.get("company"):
+                summary += f"Компанія: {arguments['company']}\n"
+            summary += f"Місто: {arguments.get('city', '—')}\n"
+            if items_lines:
+                summary += f"Товари:\n{items_lines}\n"
+            summary += f"Сума: {result.get('total', 0)} грн"
+            if arguments.get("comment"):
+                summary += f"\nКомент: {arguments['comment']}"
+            await _send_escalation("order_created", summary, sender_phone)
+            await config.log_event(
+                "order_created",
+                f"Створено заказ {result.get('order_id', '')} для {arguments.get('client_name', '—')}",
+                {"total": result.get("total", 0), "phone": arguments.get("client_phone", sender_phone)},
+            )
         return json.dumps(result, ensure_ascii=False)
 
     elif name == "get_order_status":
@@ -222,6 +249,8 @@ async def execute_tool(name: str, arguments: dict, sender_phone: str = "") -> st
         reason = arguments.get("reason", "")
         summary = arguments.get("summary", "")
         await _send_escalation(reason, summary, sender_phone)
+        await config.log_event("escalation", f"Передано менеджеру: {summary[:60]}",
+                               {"reason": reason, "phone": sender_phone})
         return json.dumps({"result": "Менеджер уведомлён"}, ensure_ascii=False)
 
     return json.dumps({"error": f"Unknown tool: {name}"}, ensure_ascii=False)

@@ -1,0 +1,466 @@
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AI Агент — СВЮ.КЛУБ</title>
+<style>
+  *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:-apple-system,'Segoe UI',Roboto,sans-serif;background:#eef0f4;color:#1a1a2e;height:100vh;display:flex;flex-direction:column;overflow:hidden}
+
+  header{background:#fff;border-bottom:1px solid #e2e5ea;padding:0 24px;display:flex;align-items:center;gap:8px;flex-shrink:0;height:52px}
+  header .logo{font-weight:800;font-size:16px;color:#1a1a2e;margin-right:18px;letter-spacing:.3px}
+  header .logo span{color:#f5a623}
+  .tab-btn{background:none;border:none;padding:16px 14px;font-size:14px;color:#667;cursor:pointer;border-bottom:2px solid transparent;font-weight:500}
+  .tab-btn:hover{color:#1a1a2e}
+  .tab-btn.active{color:#1a1a2e;border-bottom-color:#f5a623;font-weight:600}
+  header .right{margin-left:auto;display:flex;align-items:center;gap:10px;font-size:13px;color:#889}
+  .dot{width:8px;height:8px;border-radius:50%;background:#4caf50;display:inline-block}
+  .dot.off{background:#e0524d}
+
+  main{flex:1;overflow-y:auto;padding:22px}
+  .tab{display:none}.tab.active{display:block}
+
+  .cards{display:grid;grid-template-columns:repeat(6,1fr);gap:14px;margin-bottom:20px}
+  .card{background:#fff;border:1px solid #e6e9ef;border-radius:12px;padding:16px}
+  .card .lbl{font-size:12px;color:#8a93a3;margin-bottom:8px;font-weight:500}
+  .card .val{font-size:26px;font-weight:700}
+  .card .val.green{color:#2e9e57}.card .val.red{color:#e0524d}.card .val.amber{color:#e8920a}
+
+  .row2{display:grid;grid-template-columns:1.4fr 1fr;gap:16px}
+  .panel{background:#fff;border:1px solid #e6e9ef;border-radius:12px;padding:16px 18px;margin-bottom:16px}
+  .panel h3{font-size:14px;font-weight:700;margin-bottom:14px;color:#1a1a2e}
+
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th{text-align:left;color:#9aa3b2;font-weight:500;padding:6px 8px;border-bottom:1px solid #eef0f4;font-size:12px}
+  td{padding:9px 8px;border-bottom:1px solid #f3f5f8}
+  tr:last-child td{border-bottom:none}
+  .pill{display:inline-block;padding:2px 9px;border-radius:11px;font-size:11px;font-weight:600}
+  .pill.work{background:#e7f1ff;color:#2d6fe0}.pill.wait{background:#fff3df;color:#d6890b}.pill.done{background:#e4f7ea;color:#2e9e57}
+  .ch{display:inline-flex;align-items:center;gap:6px;font-size:12px}
+  .ch i{width:9px;height:9px;border-radius:2px;display:inline-block}
+
+  .opp{display:flex;align-items:center;gap:12px;padding:11px 0;border-bottom:1px solid #f3f5f8}
+  .opp:last-child{border-bottom:none}
+  .opp .ic{width:38px;height:38px;border-radius:9px;display:flex;align-items:center;justify-content:center;font-size:18px;flex-shrink:0}
+  .opp .txt{flex:1}.opp .txt b{font-size:13px}.opp .txt .s{font-size:12px;color:#8a93a3}
+  .btn{background:#1a1a2e;color:#fff;border:none;border-radius:8px;padding:7px 14px;font-size:12px;font-weight:600;cursor:pointer}
+  .btn:hover{background:#2a2a45}.btn.light{background:#eef0f4;color:#1a1a2e}.btn:disabled{opacity:.5;cursor:default}
+
+  .feed{font-size:13px}
+  .feed .it{display:flex;gap:10px;padding:7px 0;align-items:baseline}
+  .feed .t{color:#9aa3b2;font-size:11px;width:42px;flex-shrink:0}
+  .donut{display:flex;align-items:center;gap:18px}
+  .legend div{display:flex;align-items:center;gap:8px;font-size:13px;margin:6px 0}
+  .legend i{width:11px;height:11px;border-radius:3px}
+
+  .camp{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}
+  .camp .c{background:#fff;border:1px solid #e6e9ef;border-radius:12px;padding:18px}
+  .camp .c .em{font-size:26px}.camp .c h4{margin:8px 0 4px;font-size:15px}
+  .camp .c p{font-size:12px;color:#8a93a3;min-height:34px}
+  .camp .c .cnt{font-size:13px;margin:10px 0;color:#2d6fe0;font-weight:600}
+  .camp .c .res{font-size:12px;color:#2e9e57;margin-top:8px;min-height:16px}
+
+  .set label{display:block;font-size:13px;font-weight:600;margin:14px 0 6px}
+  .set textarea{width:100%;min-height:220px;border:1px solid #d8dce4;border-radius:9px;padding:12px;font-family:ui-monospace,monospace;font-size:12.5px;line-height:1.5;resize:vertical}
+  .set input[type=number]{width:90px;border:1px solid #d8dce4;border-radius:7px;padding:7px 9px;font-size:13px}
+  .grid-set{display:grid;grid-template-columns:repeat(2,1fr);gap:12px 28px;max-width:680px}
+  .fld{display:flex;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:1px solid #f3f5f8}
+  .fld .n{font-size:13px}.fld .n small{display:block;color:#9aa3b2;font-size:11px}
+  .sw{position:relative;width:42px;height:24px}
+  .sw input{display:none}.sw .sl{position:absolute;inset:0;background:#ccd2dc;border-radius:24px;transition:.2s;cursor:pointer}
+  .sw .sl:before{content:"";position:absolute;width:18px;height:18px;left:3px;top:3px;background:#fff;border-radius:50%;transition:.2s}
+  .sw input:checked+.sl{background:#2e9e57}.sw input:checked+.sl:before{transform:translateX(18px)}
+  .savebar{margin-top:18px;display:flex;gap:10px;align-items:center}
+  .saved{color:#2e9e57;font-size:13px}
+
+  .dlg{display:flex;gap:16px;height:calc(100vh - 140px)}
+  .dlg .side{width:300px;background:#fff;border:1px solid #e6e9ef;border-radius:12px;overflow-y:auto;flex-shrink:0}
+  .ci{display:flex;gap:10px;padding:11px 14px;cursor:pointer;border-bottom:1px solid #f3f5f8}
+  .ci:hover{background:#f7f9fc}.ci.active{background:#eef3ff}
+  .av{width:38px;height:38px;border-radius:50%;background:#1a1a2e;color:#fff;display:flex;align-items:center;justify-content:center;font-weight:700;flex-shrink:0}
+  .ci .nm{font-weight:600;font-size:13px}.ci .pv{font-size:11px;color:#9aa3b2;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:200px}
+  .dlg .conv{flex:1;background:#fff;border:1px solid #e6e9ef;border-radius:12px;display:flex;flex-direction:column;overflow:hidden}
+  .msgs{flex:1;overflow-y:auto;padding:18px;display:flex;flex-direction:column;gap:9px}
+  .m{max-width:74%;padding:9px 13px;border-radius:14px;font-size:13.5px;line-height:1.45}
+  .m.user{align-self:flex-end;background:#dcf8c6}.m.assistant{align-self:flex-start;background:#f1f3f7}
+  .muted{color:#9aa3b2;text-align:center;padding:30px;font-size:13px}
+</style>
+</head>
+<body>
+<header>
+  <div class="logo">СВЮ.<span>КЛУБ</span> · AI Агент</div>
+  <button class="tab-btn active" data-tab="overview" onclick="switchTab('overview')">Огляд</button>
+  <button class="tab-btn" data-tab="dialogs" onclick="switchTab('dialogs')">Діалоги</button>
+  <button class="tab-btn" data-tab="campaigns" onclick="switchTab('campaigns')">Кампанії</button>
+  <button class="tab-btn" data-tab="settings" onclick="switchTab('settings')">Налаштування</button>
+  <div class="right">
+    <span id="updTxt" style="font-size:11px;color:#aab"></span>
+    <button class="btn" id="agentBtn" style="padding:6px 12px" onclick="toggleAgent()">…</button>
+    <span class="dot" id="conn"></span><span id="connTxt">…</span>
+  </div>
+</header>
+
+<main>
+  <section class="tab active" id="tab-overview">
+    <div class="cards" id="cards"></div>
+    <div class="row2">
+      <div>
+        <div class="panel">
+          <h3>Активні діалоги</h3>
+          <table><thead><tr><th>Клієнт</th><th>Канал</th><th>Статус</th><th>Час</th></tr></thead>
+          <tbody id="activeDlg"></tbody></table>
+        </div>
+        <div class="panel"><h3>Останні дії AI</h3><div class="feed" id="feed"></div></div>
+      </div>
+      <div>
+        <div class="panel"><h3>Можливості для продажу</h3><div id="opps"></div></div>
+        <div class="panel"><h3>Розподіл по каналах</h3>
+          <div class="donut"><canvas id="pie" width="120" height="120"></canvas>
+          <div class="legend" id="legend"></div></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="tab" id="tab-dialogs">
+    <div class="dlg">
+      <div class="side" id="chatList"><div class="muted">Завантаження…</div></div>
+      <div class="conv" id="conv"><div class="muted">Оберіть діалог</div></div>
+    </div>
+  </section>
+
+  <section class="tab" id="tab-campaigns">
+    <div class="panel"><h3>Автоматичні розсилки</h3>
+    <p style="font-size:13px;color:#8a93a3;margin-bottom:16px">Кожне повідомлення генерується AI персонально під клієнта на основі його історії. Розсилка йде клієнтам із BAS, у кого є телефон і замовлення.</p>
+    <div class="camp" id="camp"></div></div>
+
+    <div class="panel" style="margin-top:16px">
+      <h3>Ручна розсилка</h3>
+      <p style="font-size:13px;color:#8a93a3;margin-bottom:14px">Оберіть конкретних клієнтів і відправте своє повідомлення або AI-згенероване.</p>
+      <div style="display:flex;gap:10px;margin-bottom:10px;align-items:center">
+        <input type="text" id="clientSearch" placeholder="Пошук: ім'я, телефон, компанія…" style="flex:1;border:1px solid #d8dce4;border-radius:7px;padding:8px 10px;font-size:13px" oninput="debounceSearch()">
+        <button class="btn light" onclick="selectAllVisible()" style="white-space:nowrap">Вибрати всіх</button>
+        <button class="btn light" onclick="clearSelection()">Скинути</button>
+        <span id="selCount" style="font-size:13px;color:#2d6fe0;font-weight:600;white-space:nowrap">0 обрано</span>
+      </div>
+      <div id="clientList" style="max-height:300px;overflow-y:auto;border:1px solid #e6e9ef;border-radius:9px;background:#fff">
+        <div style="padding:16px;color:#9aa3b2;text-align:center;font-size:13px">Почніть пошук або прокрутіть список</div>
+      </div>
+      <div style="margin-top:16px">
+        <div style="font-size:13px;font-weight:600;margin-bottom:8px">Тип повідомлення</div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px">
+          <button class="btn" id="mkCustom" onclick="setManualKind('')">✏️ Свій текст</button>
+          <button class="btn light" id="mkReorder" onclick="setManualKind('reorder')">🛒 AI — Повтор</button>
+          <button class="btn light" id="mkInactive" onclick="setManualKind('inactive')">👋 AI — Повернення</button>
+          <button class="btn light" id="mkNewproduct" onclick="setManualKind('newproduct')">📦 AI — Новинка</button>
+        </div>
+        <textarea id="manualMsg" placeholder="Введіть текст повідомлення…" style="width:100%;min-height:80px;border:1px solid #d8dce4;border-radius:9px;padding:10px;font-size:13px;resize:vertical;transition:opacity .2s"></textarea>
+      </div>
+      <div style="margin-top:12px;display:flex;gap:12px;align-items:center;flex-wrap:wrap">
+        <button class="btn" id="sendManualBtn" onclick="sendManual()">Відправити (<span id="sendCount">0</span>)</button>
+        <span id="manualRes" style="font-size:13px;color:#2e9e57"></span>
+        <a href="#" id="stopManualLink" style="display:none;color:#e0524d;font-size:13px;font-weight:600" onclick="stopManual();return false">Зупинити</a>
+      </div>
+    </div>
+  </section>
+
+  <section class="tab" id="tab-settings">
+    <div class="panel">
+      <h3>Підключення Telegram</h3>
+      <div id="tgBox" style="display:flex;align-items:flex-start;gap:24px">
+        <div style="flex:1">
+          <div id="tgStatus" style="font-size:14px;margin-bottom:10px">Перевірка…</div>
+          <button class="btn" id="tgBtn" onclick="tgStart()">Підключити через QR</button>
+          <div id="tgHint" style="font-size:12px;color:#8a93a3;margin-top:10px;max-width:380px"></div>
+          <div id="tgPwd" style="display:none;margin-top:12px">
+            <input type="password" id="tgPwdInput" placeholder="Пароль 2FA" style="border:1px solid #d8dce4;border-radius:7px;padding:8px 10px;font-size:13px;width:200px">
+            <button class="btn" onclick="tgPassword()">Підтвердити</button>
+          </div>
+        </div>
+        <div id="tgQr" style="width:200px;height:200px;flex-shrink:0"></div>
+      </div>
+    </div>
+    <div class="panel set">
+      <h3>Промпт агента</h3>
+      <label>Системний промпт (порожньо = вбудований за замовчуванням)</label>
+      <textarea id="prompt" placeholder="Системний промпт..."></textarea>
+
+      <h3 style="margin-top:22px">Інтервали та пороги розсилок</h3>
+      <div class="grid-set">
+        <div class="fld"><div class="n">Година розсилки<small>коли агент пише щодня</small></div><input type="number" id="send_hour" min="0" max="23"></div>
+        <div class="fld"><div class="n">Вікно повтору, днів<small>±N від розрахункової дати</small></div><input type="number" id="reorder_window_days" min="0" max="30"></div>
+        <div class="fld"><div class="n">Поріг «мовчання», днів<small>для повернення клієнта</small></div><input type="number" id="inactive_days" min="7" max="365"></div>
+        <div class="fld"><div class="n">Пауза між відправками, сек<small>захист від бану</small></div><input type="number" id="throttle_sec" min="0" max="30"></div>
+        <div class="fld"><div class="n">Максимум за запуск<small>ліміт повідомлень</small></div><input type="number" id="max_per_run" min="1" max="500"></div>
+      </div>
+
+      <h3 style="margin-top:22px">Кампанії (увімк./вимк.)</h3>
+      <div class="grid-set">
+        <div class="fld"><div class="n">Повторні закупівлі</div><label class="sw"><input type="checkbox" id="reorder_enabled"><span class="sl"></span></label></div>
+        <div class="fld"><div class="n">Повернення клієнтів</div><label class="sw"><input type="checkbox" id="inactive_enabled"><span class="sl"></span></label></div>
+        <div class="fld"><div class="n">Нові товари</div><label class="sw"><input type="checkbox" id="newproduct_enabled"><span class="sl"></span></label></div>
+      </div>
+
+      <div class="savebar"><button class="btn" onclick="saveConfig()">Зберегти</button><span class="saved" id="savedMsg"></span></div>
+    </div>
+  </section>
+</main>
+
+<script>
+const CH_COLORS={Telegram:'#2d9be0',WhatsApp:'#3fbf63',Viber:'#7c4dde','Телефон':'#f5a623'};
+function switchTab(t){
+  document.querySelectorAll('.tab-btn').forEach(b=>b.classList.toggle('active',b.dataset.tab===t));
+  document.querySelectorAll('.tab').forEach(s=>s.classList.toggle('active',s.id==='tab-'+t));
+  if(t==='overview')loadOverview();
+  if(t==='dialogs')loadChats();
+  if(t==='campaigns')loadCampaigns();
+  if(t==='settings')loadConfig();
+}
+function esc(s){return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}
+function fmtTime(ts){if(!ts)return'';try{const d=new Date(ts.replace(' ','T')+(ts.includes('+')?'':'Z'));return d.toLocaleTimeString('uk-UA',{hour:'2-digit',minute:'2-digit'})}catch{return String(ts).substring(11,16)}}
+async function j(u,o){const r=await fetch(u,o);if(!r.ok)throw await r.text();return r.json()}
+
+async function loadOverview(){
+  try{const o=await j('/api/stats/overview');
+    document.getElementById('cards').innerHTML=[
+      ['Діалогів сьогодні',o.dialogs_today,''],
+      ['Нових лідів',o.new_leads,'green'],
+      ['Заказів AI',o.ai_orders_today,'green'],
+      ['Продажі AI',Number(o.ai_sales_today).toLocaleString('uk-UA')+' грн','green'],
+      ['Потребують уваги',o.need_attention,'red'],
+      ['Не відповіли',o.unanswered,'amber'],
+    ].map(([l,v,c])=>`<div class="card"><div class="lbl">${l}</div><div class="val ${c}">${v}</div></div>`).join('');
+  }catch(e){}
+  try{const d=await j('/api/stats/active-dialogs');
+    document.getElementById('activeDlg').innerHTML=d.length?d.map(r=>{
+      const cls=r.status.includes('Очік')?'wait':r.status.includes('оформл')?'done':'work';
+      const col=CH_COLORS[r.channel]||'#999';
+      return `<tr><td>${esc(r.name)}</td><td><span class="ch"><i style="background:${col}"></i>${r.channel}</span></td><td><span class="pill ${cls}">${esc(r.status)}</span></td><td style="color:#9aa3b2">${fmtTime(r.last_ts)}</td></tr>`;
+    }).join(''):'<tr><td colspan=4 class="muted">Поки немає</td></tr>';
+  }catch(e){}
+  try{const op=await j('/api/stats/opportunities');
+    document.getElementById('opps').innerHTML=[
+      ['👥','#e7f1ff','Клієнти без заказу понад 30 днів',op.inactive_30d+' клієнтів','inactive'],
+      ['🛒','#e4f7ea','Готові до повторної закупівлі',op.reorder_ready+' клієнтів','reorder'],
+      ['📦','#fff3df','Позицій на складі',op.in_stock_positions+' товарів',''],
+    ].map(([em,bg,t,s,k])=>`<div class="opp"><div class="ic" style="background:${bg}">${em}</div><div class="txt"><b>${t}</b><div class="s">${s}</div></div>${k?`<button class="btn light" onclick="runCamp('${k}',this)">Запустити</button>`:''}</div>`).join('');
+  }catch(e){}
+  try{const ev=await j('/api/stats/recent-actions');const ic={order_created:'✅',escalation:'🧑',outbound:'✈️'};
+    document.getElementById('feed').innerHTML=ev.length?ev.map(e=>`<div class="it"><span class="t">${fmtTime(e.ts)}</span><span>${ic[e.kind]||'•'} ${esc(e.title)}</span></div>`).join(''):'<div class="muted">Поки немає дій</div>';
+  }catch(e){}
+  try{drawChannels(await j('/api/stats/channels'))}catch(e){}
+}
+function drawChannels(ch){
+  const cv=document.getElementById('pie'),x=cv.getContext('2d'),tot=ch.reduce((a,b)=>a+b.count,0)||1;
+  let a=-Math.PI/2;x.clearRect(0,0,120,120);
+  ch.forEach(c=>{const ang=c.count/tot*2*Math.PI;x.beginPath();x.moveTo(60,60);x.arc(60,60,55,a,a+ang);x.fillStyle=CH_COLORS[c.name]||'#ccc';x.fill();a+=ang});
+  x.beginPath();x.arc(60,60,30,0,2*Math.PI);x.fillStyle='#fff';x.fill();
+  document.getElementById('legend').innerHTML=ch.map(c=>`<div><i style="background:${CH_COLORS[c.name]}"></i>${c.name}<b style="margin-left:auto">${c.pct}% (${c.count})</b></div>`).join('');
+}
+
+const CAMPS=[['reorder','🛒','Повторні закупівлі','Клієнтам, у кого підійшов звичний цикл замовлення'],
+  ['inactive','👋','Повернення клієнтів','Тим, хто давно не робив замовлень'],
+  ['newproduct','📦','Новий товар','Персональна пропозиція новинки']];
+async function loadCampaigns(){
+  document.getElementById('camp').innerHTML=CAMPS.map(([k,em,t,d])=>`<div class="c"><div class="em">${em}</div><h4>${t}</h4><p>${d}</p><div class="cnt" id="cnt-${k}">…</div><button class="btn" onclick="runCamp('${k}',this)">Запустити</button><div class="res" id="res-${k}"></div></div>`).join('');
+  for(const a of CAMPS){const k=a[0];try{const p=await j('/api/campaigns/preview?kind='+k);document.getElementById('cnt-'+k).textContent='~'+p.count+' клієнтів';}catch(e){}}
+  searchClients();
+}
+async function runCamp(k,btn){
+  btn.disabled=true;const old=btn.textContent;btn.textContent='Запуск…';
+  try{const r=await j('/api/campaigns/run',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({kind:k})});
+    const el=document.getElementById('res-'+k);
+    if(el)el.innerHTML='Розсилка для ~'+r.estimated+' клієнтів… <a href="#" onclick="stopCampaign(\''+k+'\');return false" style="color:#e0524d;font-weight:600">Зупинити</a>';
+    else alert('Кампанію запущено для ~'+r.estimated+' клієнтів');
+  }catch(e){alert('Помилка: '+e)}
+  btn.disabled=false;btn.textContent=old;
+}
+
+const CFG_FIELDS=['send_hour','reorder_window_days','inactive_days','throttle_sec','max_per_run'];
+const CFG_BOOLS=['reorder_enabled','inactive_enabled','newproduct_enabled'];
+async function loadConfig(){
+  try{const c=await j('/api/config');
+    document.getElementById('prompt').value=c.system_prompt||'';
+    CFG_FIELDS.forEach(f=>document.getElementById(f).value=c[f]);
+    CFG_BOOLS.forEach(f=>document.getElementById(f).checked=!!c[f]);
+  }catch(e){}
+  tgRefreshStatus();
+}
+
+// ── Telegram QR login ──
+let tgPolling=false;
+function setConn(on){const d=document.getElementById('conn'),t=document.getElementById('connTxt');
+  d.className='dot'+(on?'':' off');t.textContent=on?'AI Online':'Telegram не підключено';}
+async function tgRefreshStatus(){
+  try{const s=await j('/api/telegram/status');
+    const el=document.getElementById('tgStatus'),btn=document.getElementById('tgBtn');
+    if(s.status==='authorized'){
+      el.innerHTML=`✅ Підключено: <b>${esc(s.name||'')}</b> ${esc(s.phone||'')}`;
+      btn.style.display='none';document.getElementById('tgQr').innerHTML='';
+      document.getElementById('tgHint').textContent='';setConn(true);
+    }else{
+      el.innerHTML='⚪ Не підключено';btn.style.display='';setConn(false);
+    }
+  }catch(e){}
+}
+async function tgStart(){
+  // Stop any previous poll loop and clear the QR before generating a new one
+  tgPolling=false;
+  const qr=document.getElementById('tgQr'),hint=document.getElementById('tgHint');
+  qr.innerHTML='';
+  hint.textContent='Відкрийте Telegram на телефоні → Налаштування → Пристрої → Підключити пристрій → скануйте QR.';
+  try{const r=await j('/api/telegram/qr/start',{method:'POST'});
+    if(r.status==='authorized'){tgRefreshStatus();return;}
+    if(r.svg)qr.innerHTML=r.svg;
+    tgPolling=true;tgPoll();
+  }catch(e){hint.textContent='Помилка: '+e;}
+}
+async function tgPoll(){
+  if(!tgPolling)return;
+  try{const r=await j('/api/telegram/qr/poll');
+    if(r.status==='authorized'){tgPolling=false;document.getElementById('tgQr').innerHTML='';document.getElementById('tgPwd').style.display='none';tgRefreshStatus();return;}
+    if(r.status==='password'){document.getElementById('tgPwd').style.display='';document.getElementById('tgHint').textContent='Увімкнено 2FA — введіть пароль.';}
+    if(r.svg)document.getElementById('tgQr').innerHTML=r.svg;
+    if(r.status==='disconnected'){tgPolling=false;return;}
+  }catch(e){}
+  setTimeout(tgPoll,2500);
+}
+async function tgPassword(){
+  const p=document.getElementById('tgPwdInput').value;
+  try{const r=await j('/api/telegram/qr/password',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:p})});
+    if(r.status==='authorized'){tgPolling=false;document.getElementById('tgPwd').style.display='none';tgRefreshStatus();}
+    else document.getElementById('tgHint').textContent='Невірний пароль, спробуйте ще раз.';
+  }catch(e){document.getElementById('tgHint').textContent='Помилка: '+e;}
+}
+async function saveConfig(){
+  const body={system_prompt:document.getElementById('prompt').value};
+  CFG_FIELDS.forEach(f=>body[f]=Number(document.getElementById(f).value));
+  CFG_BOOLS.forEach(f=>body[f]=document.getElementById(f).checked);
+  try{await j('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    const m=document.getElementById('savedMsg');m.textContent='✓ Збережено';setTimeout(()=>m.textContent='',2500);
+  }catch(e){alert('Помилка збереження: '+e)}
+}
+
+let chats=[],cur=null;
+async function loadChats(){
+  try{chats=await j('/api/chats');
+    document.getElementById('chatList').innerHTML=chats.length?chats.map(c=>{
+      const nm=c.name||c.phone||('ID '+c.chat_id);
+      return `<div class="ci ${c.chat_id===cur?'active':''}" onclick="openChat('${c.chat_id}')"><div class="av">${esc((nm[0]||'?')).toUpperCase()}</div><div><div class="nm">${esc(nm)}</div><div class="pv">${esc((c.last_msg||'').substring(0,40))}</div></div></div>`;
+    }).join(''):'<div class="muted">Діалогів немає</div>';
+  }catch(e){document.getElementById('chatList').innerHTML='<div class="muted">Помилка</div>'}
+}
+async function openChat(id){
+  cur=id;loadChats();
+  try{const d=await j('/api/chat/'+id);const cl=d.client||{};
+    const head=`<div style="padding:14px 18px;border-bottom:1px solid #eef0f4"><b>${esc(cl.name||cl.phone||'Чат')}</b> <span style="color:#9aa3b2;font-size:12px">${esc(cl.phone||'')} ${esc(cl.company||'')}</span></div>`;
+    const body=`<div class="msgs">${(d.messages||[]).map(m=>`<div class="m ${m.role}">${esc(m.content).replace(/\n/g,'<br>')}</div>`).join('')||'<div class="muted">Порожньо</div>'}</div>`;
+    document.getElementById('conv').innerHTML=head+body;
+    const b=document.querySelector('#conv .msgs');if(b)b.scrollTop=b.scrollHeight;
+  }catch(e){document.getElementById('conv').innerHTML='<div class="muted">Помилка</div>'}
+}
+
+// ── Agent master switch ──
+let agentEnabled=true;
+async function refreshAgentState(){
+  try{const s=await j('/api/agent/state');agentEnabled=s.agent_enabled;
+    const b=document.getElementById('agentBtn');
+    if(agentEnabled){b.textContent='⏸ Зупинити агента';b.style.background='#e0524d';}
+    else{b.textContent='▶ Запустити агента';b.style.background='#2e9e57';}
+  }catch(e){}
+}
+async function toggleAgent(){
+  try{const r=await j('/api/agent/toggle',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled:!agentEnabled})});
+    agentEnabled=r.agent_enabled;refreshAgentState();
+  }catch(e){alert('Помилка: '+e)}
+}
+async function stopCampaign(k){
+  try{await j('/api/campaigns/stop',{method:'POST'});const el=document.getElementById('res-'+k);if(el)el.textContent='Зупинено';}catch(e){}
+}
+
+// ── Manual send ──
+let selectedClients=new Set(),manualKind='',_clientData=[],_searchTimer=null;
+
+function debounceSearch(){clearTimeout(_searchTimer);_searchTimer=setTimeout(searchClients,300);}
+
+async function searchClients(){
+  const q=document.getElementById('clientSearch').value;
+  try{_clientData=await j('/api/clients?search='+encodeURIComponent(q)+'&limit=50');renderClientList();}catch(e){}
+}
+
+function renderClientList(){
+  const el=document.getElementById('clientList');
+  if(!_clientData.length){el.innerHTML='<div style="padding:16px;color:#9aa3b2;text-align:center;font-size:13px">Нічого не знайдено</div>';return;}
+  el.innerHTML=_clientData.map(c=>{
+    const chk=selectedClients.has(c.ref_key)?'checked':'';
+    const last=(c.last_order||'').substring(0,10)||'—';
+    return `<label style="display:flex;align-items:center;gap:10px;padding:9px 14px;border-bottom:1px solid #f3f5f8;cursor:pointer;user-select:none">
+      <input type="checkbox" ${chk} onchange="toggleClient('${esc(c.ref_key)}',this.checked)" style="width:15px;height:15px;flex-shrink:0;cursor:pointer">
+      <span style="flex:1;min-width:0"><b>${esc(c.name||'—')}</b><span style="color:#9aa3b2;margin-left:8px;font-size:12px">${esc(c.phone||'')}</span><span style="color:#b0b8c9;margin-left:6px;font-size:11px">${esc(c.company||'')}</span></span>
+      <span style="color:#9aa3b2;font-size:11px;flex-shrink:0">остан. ${last}</span>
+    </label>`;
+  }).join('');
+}
+
+function toggleClient(ref_key,checked){
+  if(checked)selectedClients.add(ref_key);else selectedClients.delete(ref_key);
+  updateSelCount();
+}
+function updateSelCount(){
+  const n=selectedClients.size;
+  document.getElementById('selCount').textContent=n+' обрано';
+  document.getElementById('sendCount').textContent=n;
+}
+function selectAllVisible(){_clientData.forEach(c=>selectedClients.add(c.ref_key));renderClientList();updateSelCount();}
+function clearSelection(){selectedClients.clear();renderClientList();updateSelCount();}
+
+function setManualKind(k){
+  manualKind=k;
+  const map={'':'mkCustom','reorder':'mkReorder','inactive':'mkInactive','newproduct':'mkNewproduct'};
+  Object.entries(map).forEach(([kk,id])=>{const b=document.getElementById(id);if(b)b.className=kk===k?'btn':'btn light';});
+  const ta=document.getElementById('manualMsg');
+  if(k){ta.placeholder='AI складе персональне повідомлення для кожного клієнта автоматично…';ta.value='';ta.style.opacity='.45';ta.readOnly=true;}
+  else{ta.placeholder='Введіть текст повідомлення…';ta.style.opacity='';ta.readOnly=false;}
+}
+
+async function sendManual(){
+  if(!selectedClients.size){alert('Оберіть хоча б одного клієнта');return;}
+  const msg=document.getElementById('manualMsg').value.trim();
+  if(!manualKind&&!msg){alert('Введіть текст або оберіть тип AI-повідомлення');return;}
+  const btn=document.getElementById('sendManualBtn');btn.disabled=true;
+  document.getElementById('manualRes').textContent='';
+  try{
+    const r=await j('/api/campaigns/send-manual',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({client_ref_keys:[...selectedClients],message:msg,kind:manualKind})});
+    document.getElementById('manualRes').textContent='Відправляємо '+r.count+' клієнтам…';
+    document.getElementById('stopManualLink').style.display='';
+  }catch(e){alert('Помилка: '+e);}
+  btn.disabled=false;
+}
+async function stopManual(){
+  try{await j('/api/campaigns/stop',{method:'POST'});
+    document.getElementById('manualRes').textContent='Зупинено';
+    document.getElementById('stopManualLink').style.display='none';
+  }catch(e){}
+}
+
+// ── live refresh: active tab + timestamp ──
+function refreshActive(){
+  const t=document.querySelector('.tab.active');if(!t)return;
+  const id=t.id.replace('tab-','');
+  if(id==='overview')loadOverview();
+  else if(id==='dialogs'){loadChats();if(cur)openChat(cur);}
+  else if(id==='campaigns')loadCampaigns();
+  refreshAgentState();tgRefreshStatus();
+  document.getElementById('updTxt').textContent='оновлено '+new Date().toLocaleTimeString('uk-UA',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
+}
+
+loadOverview();
+refreshAgentState();
+tgRefreshStatus();
+refreshActive();
+setInterval(refreshActive,10000);
+</script>
+</body>
+</html>
