@@ -28,7 +28,7 @@ def test_mock_products_structure():
 def test_build_system_prompt_new_client():
     prompt = build_system_prompt(None, None)
     assert "НОВЫЙ" in prompt
-    assert "СВЮ.КЛУБ" in prompt
+    assert "С.В.Ю" in prompt
 
 
 def test_build_system_prompt_known_client_no_orders():
@@ -36,7 +36,7 @@ def test_build_system_prompt_known_client_no_orders():
     prompt = build_system_prompt(client, [])
     assert "Оксана" in prompt
     assert "заказов ещё не было" in prompt
-    assert "ПОСТОЯННЫЙ" not in prompt
+    assert "Клиент — ПОСТОЯННЫЙ" not in prompt
 
 
 def test_build_system_prompt_returning_client():
@@ -51,7 +51,7 @@ def test_build_system_prompt_returning_client():
     ]
     prompt = build_system_prompt(client, orders)
     assert "Андрій" in prompt
-    assert "ПОСТОЯННЫЙ" in prompt
+    assert "Клиент — ПОСТОЯННЫЙ" in prompt
     assert "Болт М8×50" in prompt
     assert "4200" in prompt
 

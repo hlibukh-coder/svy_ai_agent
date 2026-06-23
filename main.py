@@ -119,7 +119,33 @@ async def api_chat(chat_id: str):
     if not client_info and linked:
         client_info = {"name": linked.get("name", ""), "phone": linked.get("phone", "")}
 
-    return {"chat_id": chat_id, "messages": messages, "client": client_info}
+    from src.context import is_chat_paused
+    ai_paused = await is_chat_paused(chat_id)
+
+    return {"chat_id": chat_id, "messages": messages, "client": client_info, "ai_paused": ai_paused}
+
+
+class ChatSendRequest(BaseModel):
+    text: str
+
+
+@app.post("/api/chat/{chat_id}/send")
+async def api_chat_operator_send(chat_id: str, req: ChatSendRequest):
+    """Operator (human) sends a raw message into a chat; pauses the AI for this chat."""
+    from src.index import operator_send
+    result = await operator_send(chat_id, req.text)
+    if not result.get("ok"):
+        raise HTTPException(status_code=409, detail=result.get("error", "send failed"))
+    return result
+
+
+@app.post("/api/chat/{chat_id}/ai")
+async def api_chat_toggle_ai(chat_id: str, payload: dict):
+    """Enable/disable the AI for a single chat (human takeover toggle)."""
+    from src import context
+    enabled = bool(payload.get("enabled", True))
+    await context.set_chat_ai_paused(chat_id, not enabled)
+    return {"chat_id": chat_id, "ai_enabled": enabled}
 
 
 # ── Analytics API (overview / opportunities / channels / actions) ─────────────

@@ -16,7 +16,9 @@ BAS_PASS = os.getenv("BAS_PASS", os.getenv("BAS_PASSWORD", ""))
 
 
 def _auth():
-    return aiohttp.BasicAuth(BAS_USER, BAS_PASS)
+    # BAS login is Cyrillic ("ЮдінСВ"); aiohttp's default latin-1 BasicAuth
+    # encoding raises UnicodeEncodeError, so force UTF-8.
+    return aiohttp.BasicAuth(BAS_USER, BAS_PASS, "utf-8")
 
 
 def _url(raw: str) -> yarl.URL:
@@ -201,25 +203,76 @@ async def get_orders(client_id: str) -> list:
 # get_products
 # ---------------------------------------------------------------------------
 
-def _normalize_query(query: str) -> str:
-    """Normalize search query: dimension separators, Latin→Cyrillic lookalikes, plural.
+# Cyrillic→Latin lookalike folding (lowercase). BAS names mix scripts freely:
+# "Гайка Din 6923 M8" (Latin M) vs "М8" (Cyrillic М). Fold both query and name to
+# one canonical form so size/standard tokens match regardless of script. The SAME
+# pair of strings is used in SQL translate() — keep them in sync.
+_FOLD_CYR = "авекмнорстухі"
+_FOLD_LAT = "abekmhopctyxi"
+_FOLD = str.maketrans(_FOLD_CYR, _FOLD_LAT)
+_NAME_FOLD_SQL = f"translate(lower(name), '{_FOLD_CYR}', '{_FOLD_LAT}')"
+_STOPWORDS = {"з", "із", "зі", "для", "та", "і", "й", "в", "на", "по", "до", "от", "the", "din"}
 
-    BAS product names use the Cyrillic 'х' as the dimension separator (e.g. "М8х50").
-    Users/LLM often type "×" (U+00D7), latin "x" or "*" instead — normalize them all.
+
+def _fold(s: str) -> str:
+    return s.lower().translate(_FOLD)
+
+
+def _tokenize_query(query: str) -> tuple[list[str], list[str]]:
+    """Split a product query into (required, optional) folded tokens.
+
+    Required = tokens containing a digit (sizes, DIN numbers, dimensions) — the
+    selective parts. Dimension chains ("M8х50", "6,4х12,5") are split on the
+    separator so format differences in BAS names don't cause misses. Optional =
+    descriptive words, used only for ranking. If nothing has a digit, the longest
+    word becomes the sole required token so we still narrow the result set.
     """
-    # Dimension separators → Cyrillic 'х'
-    q = query.replace("×", "х").replace("*", "х")
-    # Latin lookalikes → Cyrillic (e.g. M→М, A→А, x→х — common keyboard mix-up)
-    latin_to_cyr = str.maketrans("ABCEHIMOPTXaBeHiMcopTx", "АВСЕНІМОРТХаВеНіМсорТх")
-    words = q.translate(latin_to_cyr).split()
-    result = []
-    for word in words:
-        # Strip Ukrainian plural suffix: болти→болт, гайки→гайк, шайби→шайб
-        if len(word) > 4 and word[-1] in "иі" and not word[-2:].isdigit():
-            result.append(word[:-1])
-        else:
-            result.append(word)
-    return " ".join(result)
+    q = query.replace("×", "х").replace("*", "х").replace("x", "х").replace("X", "х")
+    raw: list[str] = []
+    for word in q.split():
+        parts = [p for p in word.split("х") if p]
+        raw.extend(parts if len(parts) > 1 else [word])
+
+    required, optional = [], []
+    for w in raw:
+        f = _fold(w.strip(".,;:()/"))
+        if len(f) < 2 or f in _STOPWORDS:
+            continue
+        if any(ch.isdigit() for ch in f):
+            required.append(f)
+        elif f not in optional:
+            optional.append(f)
+    if not required and optional:
+        longest = max(optional, key=len)
+        required = [longest]
+        optional = [o for o in optional if o != longest]
+    return required, optional
+
+
+# Product-class synonym groups (Ukrainian/Russian stems). Used to rank rows of the
+# SAME class as the query first: "болт М6" must rank actual bolts above nuts/rivets
+# that merely contain "М6".
+_CATEGORY_GROUPS = [
+    ["болт", "гвинт", "винт"],
+    ["гайк"],
+    ["шайб"],
+    ["заклеп", "заклёп"],
+    ["шпильк"],
+    ["заклепочн", "заклепувальн", "заклёпочн", "клепальник"],
+    ["саморіз", "саморез"],
+    ["анкер"],
+    ["дюбел"],
+    ["шуруп"],
+]
+
+
+def _category_patterns(query: str) -> list[str]:
+    """Folded name-substrings to boost rows of the same product class as the query."""
+    q = _fold(query)
+    for group in _CATEGORY_GROUPS:
+        if any(_fold(stem) in q for stem in group):
+            return [_fold(stem) for stem in group]
+    return []
 
 
 async def get_products(query: str) -> list:
@@ -236,36 +289,51 @@ async def get_products(query: str) -> list:
     pool = _get_pool()
     if pool:
         try:
-            # Normalize (separators/plural/Latin) then split into tokens.
-            # Fastener names scatter attributes ("Гвинт М6х10 ... А2"), so a single
-            # ILIKE phrase or tsvector rarely matches — instead require EACH token to
-            # appear somewhere in the name (AND of per-token ILIKE).
-            q_norm = _normalize_query(query)
-            tokens = [t for t in q_norm.split() if len(t) >= 2]
+            # Fastener names scatter attributes ("Гайка Din 6923 M8 цб зубч") and mix
+            # Latin/Cyrillic, so requiring every word — including descriptors like
+            # "з фланцем" — misses real products. Instead: require only the selective
+            # digit tokens (sizes/standards/dims), match script-insensitively, and
+            # rank by how many descriptive words also hit.
+            required, optional = _tokenize_query(query)
 
-            # $1 = raw phrase (for code match + exact-phrase ranking boost)
-            # $2.. = one param per token
-            params: list = [f"%{query}%"]
-            token_conds = []
-            for t in tokens:
+            params: list = [f"%{query}%"]  # $1 = raw phrase (code match)
+            req_conds = []
+            for t in required:
                 params.append(f"%{t}%")
-                token_conds.append(f"name ILIKE ${len(params)}")
-            tokens_clause = " AND ".join(token_conds) if token_conds else "name ILIKE $1"
+                req_conds.append(f"{_NAME_FOLD_SQL} LIKE ${len(params)}")
+            req_clause = " AND ".join(req_conds) if req_conds else "name ILIKE $1"
+
+            score_terms = []
+            for t in optional:
+                params.append(f"%{t}%")
+                score_terms.append(
+                    f"(CASE WHEN {_NAME_FOLD_SQL} LIKE ${len(params)} THEN 1 ELSE 0 END)"
+                )
+            score_sql = " + ".join(score_terms) if score_terms else "0"
+
+            # Same-class boost: rank rows whose name is the queried product type first.
+            cat_conds = []
+            for p in _category_patterns(query):
+                params.append(f"%{p}%")
+                cat_conds.append(f"{_NAME_FOLD_SQL} LIKE ${len(params)}")
+            cat_boost = (
+                f"CASE WHEN ({' OR '.join(cat_conds)}) THEN 0 ELSE 1 END"
+                if cat_conds else "1"
+            )
 
             sql = f"""
-                SELECT ref_key, name, code, price, stock
+                SELECT ref_key, name, code, price, stock, ({score_sql}) AS score
                 FROM products
                 WHERE deleted = false
-                  AND (
-                    code ILIKE $1
-                    OR ({tokens_clause})
-                  )
+                  AND ( code ILIKE $1 OR ({req_clause}) )
                 ORDER BY
-                  -- exact full-phrase matches rank first, then in-stock, then stock
-                  CASE WHEN name ILIKE $1 OR code ILIKE $1 THEN 0 ELSE 1 END,
+                  CASE WHEN code ILIKE $1 THEN 0 ELSE 1 END,
+                  {cat_boost},
                   (stock > 0) DESC,
+                  score DESC,
+                  (price > 0) DESC,
                   stock DESC
-                LIMIT 5
+                LIMIT 8
             """
             async with pool.acquire() as conn:
                 rows = await conn.fetch(sql, *params)

@@ -1,6 +1,10 @@
 .env
 session/
 data/
+.venv/
+.venv_py313_bak/
+*.log
+.server.pid
 __pycache__/
 *.pyc
 *.pyo

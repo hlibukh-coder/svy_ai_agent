@@ -31,7 +31,9 @@ MANAGER_TG_ID = int(os.getenv("MANAGER_TG_ID", "0") or "0")
 ESCALATION_CHAT_ID = os.getenv("ESCALATION_CHAT_ID", "")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 
-openai_client = AsyncOpenAI(api_key=OPENAI_API_KEY)
+# max_retries: SDK retries 429 / transient errors with exponential backoff so a
+# rate-limit spike doesn't drop a client message.
+openai_client = AsyncOpenAI(api_key=OPENAI_API_KEY, max_retries=4)
 
 MAX_TOOL_ITERATIONS = 5
 
@@ -88,8 +90,9 @@ async def get_sender_phone(tg_client: TelegramClient, sender: User) -> str:
     return ""
 
 
-async def run_openai(messages: list, sender_phone: str) -> str:
-    """Run OpenAI with function calling loop (up to MAX_TOOL_ITERATIONS)."""
+async def run_openai(messages: list, sender_phone: str) -> tuple[str, set]:
+    """Run OpenAI with function calling loop. Returns (reply, set_of_called_tools)."""
+    called: set = set()
     for _ in range(MAX_TOOL_ITERATIONS):
         response = await openai_client.chat.completions.create(
             model="gpt-4o",
@@ -100,12 +103,13 @@ async def run_openai(messages: list, sender_phone: str) -> str:
         msg = response.choices[0].message
 
         if not msg.tool_calls:
-            return msg.content or ""
+            return msg.content or "", called
 
         messages.append(msg)
 
         for tc in msg.tool_calls:
             fn_name = tc.function.name
+            called.add(fn_name)
             try:
                 fn_args = json.loads(tc.function.arguments)
             except json.JSONDecodeError:
@@ -126,7 +130,111 @@ async def run_openai(messages: list, sender_phone: str) -> str:
         model="gpt-4o",
         messages=messages,
     )
-    return response.choices[0].message.content or ""
+    return response.choices[0].message.content or "", called
+
+
+TG_MSG_LIMIT = 4000  # Telegram hard limit is 4096; keep margin for safety.
+
+# Agent promises a hand-off when a hand-off verb (передам/перекажу/покличу/залучу/
+# зв'яжу) co-occurs with a manager token, or when it promises a manager will write
+# "найближчим часом". Regex (not substrings) so common Ukrainian phrasings match.
+_HANDOFF_RE = re.compile(
+    r"(переда\w*|перекаж\w*|поклич\w*|залуч\w*|з[вʼ'`]?яж\w*)[^.\n]{0,40}"
+    r"(менеджер|спеціаліст|колег)"
+    r"|(менеджер|спеціаліст)\w*[^.\n]{0,40}(зв[вʼ'`]?яж\w*|напише|відповіст|зателефон)"
+    r"|напише\s+(вам\s+)?найближч"
+    r"|зв[вʼ'`]?яж\w*\s+з\s+вами\s+найближч",
+    re.IGNORECASE,
+)
+# Don't fire on a NEGATED promise ("я НЕ передам менеджеру без вашої згоди").
+_HANDOFF_NEG_RE = re.compile(
+    r"\b(не|ні)\b[^.\n]{0,15}(переда\w*|перекаж\w*|поклич\w*|залуч\w*)",
+    re.IGNORECASE,
+)
+
+
+def _promised_handoff(reply: str) -> bool:
+    low = (reply or "").lower()
+    if not low:
+        return False
+    if _HANDOFF_NEG_RE.search(low):
+        return False
+    return bool(_HANDOFF_RE.search(low))
+
+
+async def _ensure_handoff(reply: str, called: set, summary: str, phone: str):
+    """Completion guarantee: if the agent PROMISED a hand-off but no terminal tool
+    (notify_manager / create_order) fired, escalate anyway so nothing dead-ends."""
+    if called & {"notify_manager", "create_order"}:
+        return
+    if not _promised_handoff(reply):
+        return
+    try:
+        await tools.execute_tool(
+            "notify_manager",
+            {"reason": "complex_question", "summary": (reply[:300] or (summary or "")[:300])},
+            phone,
+        )
+        logger.info("[SAFETY] auto-escalated a promised hand-off")
+    except Exception as e:
+        logger.error(f"[SAFETY] auto-escalation failed: {e}")
+
+
+def _hard_chunks(text: str, limit: int = TG_MSG_LIMIT) -> list[str]:
+    """Split one block into <=limit pieces on newline/space, hard-cut as last resort."""
+    text = text.strip()
+    if not text:
+        return []
+    out = []
+    while len(text) > limit:
+        cut = text.rfind("\n", 0, limit)
+        if cut < limit // 2:
+            cut = text.rfind(" ", 0, limit)
+        if cut < limit // 2:
+            cut = limit
+        out.append(text[:cut].strip())
+        text = text[cut:].strip()
+    if text:
+        out.append(text)
+    return out
+
+
+def _split_reply(reply: str, max_parts: int = 4) -> list[str]:
+    """Split an agent reply into separate Telegram messages on blank lines, the way
+    a real manager sends several short messages. Question-lists (single-newline lines
+    with leading "- ") stay in one block. Capped to avoid spam, and every part is
+    forced under Telegram's length limit."""
+    reply = (reply or "").strip()
+    if not reply:
+        return []
+    blocks = [b.strip() for b in re.split(r"\n\s*\n", reply) if b.strip()]
+    if not blocks:
+        return []
+    if len(blocks) > max_parts:
+        blocks = blocks[: max_parts - 1] + ["\n\n".join(blocks[max_parts - 1:])]
+    parts: list[str] = []
+    for b in blocks:
+        parts.extend(_hard_chunks(b))
+    return parts
+
+
+async def _send_reply(tg_client, event, reply: str):
+    """Send the reply as one or several natural messages with typing indicators.
+    Each send is isolated so a single failure can't abort the rest."""
+    parts = _split_reply(reply)
+    if not parts:
+        return
+    for i, part in enumerate(parts):
+        if i:
+            try:
+                async with tg_client.action(event.chat_id, "typing"):
+                    await asyncio.sleep(min(2.0, 0.5 + len(part) / 140))
+            except Exception:
+                pass
+        try:
+            await event.respond(part)
+        except Exception as e:
+            logger.error(f"[SEND] respond failed: {e}")
 
 
 async def handle_message(tg_client: TelegramClient, event):
@@ -150,6 +258,12 @@ async def handle_message(tg_client: TelegramClient, event):
     if not await config.get_value("agent_enabled", True):
         await context.save_message(chat_id, "user", user_text)
         logger.info(f"[IN] agent paused — saved but not replying ({chat_id})")
+        return
+
+    # Per-chat human takeover: an operator is handling this chat → record but stay silent
+    if await context.is_chat_paused(chat_id):
+        await context.save_message(chat_id, "user", user_text)
+        logger.info(f"[IN] chat {chat_id} under human control — AI silent")
         return
 
     # Hint for initial setup: log chat_id of anyone who messages us
@@ -210,11 +324,24 @@ async def handle_message(tg_client: TelegramClient, event):
 
         await context.save_message(chat_id, "user", user_text)
 
+        ok = True
         try:
-            reply = await run_openai(messages, phone)
+            reply, called = await run_openai(messages, phone)
         except Exception as e:
             logger.error(f"OpenAI error: {e}")
-            reply = "Вибачте, сталася помилка. Спробуйте ще раз."
+            reply, called, ok = "Вибачте, сталася помилка. Спробуйте ще раз.", set(), False
+
+        # ── Step 3b: completion guarantee — a promised hand-off MUST really escalate
+        if ok:
+            await _ensure_handoff(reply, called, user_text, phone)
+
+        # Never send an empty message (e.g. a tool-only turn) — give a real next step
+        if not (reply or "").strip():
+            reply = (
+                "Дякую! Передав ваш запит, менеджер зв'яжеться з вами найближчим часом."
+                if called & {"create_order", "notify_manager"}
+                else "Хвилинку, уточню і повернусь до вас."
+            )
 
         # ── Step 4: check if reply contains a phone (client gave it mid-chat) ─
         if not linked and not phone:
@@ -227,7 +354,7 @@ async def handle_message(tg_client: TelegramClient, event):
         await context.save_message(chat_id, "assistant", reply)
 
     logger.info(f"[OUT] chat={chat_id} text={reply[:80]}")
-    await event.respond(reply)
+    await _send_reply(tg_client, event, reply)
 
 
 async def send_to_client(phone: str, text: str) -> dict:
@@ -257,10 +384,14 @@ async def send_to_client(phone: str, text: str) -> dict:
     messages.append({"role": "user", "content": text})
 
     try:
-        reply = await run_openai(messages, phone)
+        reply, _called = await run_openai(messages, phone)
     except Exception as e:
         logger.error(f"[SEND] OpenAI error: {e}")
         return {"ok": False, "error": str(e)}
+
+    await _ensure_handoff(reply, _called, text, phone)
+    if not (reply or "").strip():
+        reply = "Дякую! Передав ваш запит, менеджер зв'яжеться з вами найближчим часом."
 
     await context.save_message(chat_id, "user", text)
     await context.save_message(chat_id, "assistant", reply)
@@ -275,6 +406,33 @@ async def send_to_client(phone: str, text: str) -> dict:
     return {"ok": True, "reply": reply}
 
 
+async def operator_send(chat_id: str, text: str) -> dict:
+    """Send a RAW operator (human) message into a chat and pause the AI there.
+
+    Used by the dashboard so a manager can take over a conversation. The message is
+    saved to history (as the business side) and the AI stops auto-replying in this
+    chat until it is re-enabled from the dashboard.
+    """
+    if _tg_client is None:
+        return {"ok": False, "error": "Telegram не підключено"}
+    text = (text or "").strip()
+    if not text:
+        return {"ok": False, "error": "Порожнє повідомлення"}
+    try:
+        peer = int(chat_id)
+    except (TypeError, ValueError):
+        peer = chat_id
+    try:
+        await _tg_client.send_message(peer, text)
+    except Exception as e:
+        logger.error(f"[OPERATOR] send to {chat_id} failed: {e}")
+        return {"ok": False, "error": str(e)}
+    await context.save_message(chat_id, "assistant", text)
+    await context.set_chat_ai_paused(chat_id, True)  # human took over this chat
+    logger.info(f"[OPERATOR] sent to {chat_id}; AI paused for this chat")
+    return {"ok": True}
+
+
 async def activate_client(tg_client, start_scheduler: bool = True):
     """Wire an AUTHORIZED client into the running app: globals, handler, scheduler.
 
@@ -284,6 +442,12 @@ async def activate_client(tg_client, start_scheduler: bool = True):
     _tg_client = tg_client
     escalation_peer = int(ESCALATION_CHAT_ID) if ESCALATION_CHAT_ID else None
     tools.set_tg_client(tg_client, escalation_peer)
+    if escalation_peer is None:
+        logger.warning(
+            "[TG] ESCALATION_CHAT_ID не задан — передачи менеджеру и уведомления о "
+            "заказах идут в Saved Messages бота. Укажите ESCALATION_CHAT_ID для "
+            "отдельного чата менеджера."
+        )
     tg_client.add_event_handler(
         lambda e: handle_message(tg_client, e),
         events.NewMessage(incoming=True),

@@ -31,8 +31,40 @@ async def init_db():
             )
             """
         )
+        await db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS chat_control (
+                chat_id     TEXT PRIMARY KEY,
+                ai_paused   INTEGER NOT NULL DEFAULT 0,
+                updated_at  DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
         await db.commit()
     logger.info(f"DB initialised at {DB_PATH}")
+
+
+async def set_chat_ai_paused(chat_id: str, paused: bool):
+    """Pause/resume the AI for a single chat (human takeover)."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "INSERT INTO chat_control (chat_id, ai_paused, updated_at) "
+            "VALUES (?, ?, CURRENT_TIMESTAMP) "
+            "ON CONFLICT(chat_id) DO UPDATE SET "
+            "ai_paused = excluded.ai_paused, updated_at = CURRENT_TIMESTAMP",
+            (str(chat_id), 1 if paused else 0),
+        )
+        await db.commit()
+
+
+async def is_chat_paused(chat_id: str) -> bool:
+    """True if a human operator is handling this chat and the AI should stay silent."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT ai_paused FROM chat_control WHERE chat_id = ?", (str(chat_id),)
+        ) as cur:
+            row = await cur.fetchone()
+    return bool(row and row[0])
 
 
 async def load_history(chat_id: str, limit: int = 20) -> list[dict]:

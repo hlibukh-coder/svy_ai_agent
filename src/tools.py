@@ -257,17 +257,21 @@ async def execute_tool(name: str, arguments: dict, sender_phone: str = "") -> st
 
 
 async def _send_escalation(reason: str, summary: str, sender_phone: str):
-    if not _tg_client or not _escalation_peer:
-        logger.warning(f"[ESCALATION] No tg client or peer. reason={reason}, summary={summary}")
+    if not _tg_client:
+        logger.warning(f"[ESCALATION] No tg client. reason={reason}, summary={summary}")
         return
+    # Fall back to the operator's own Saved Messages ("me") so a hand-off is NEVER
+    # lost when ESCALATION_CHAT_ID is not configured — otherwise the manager never
+    # learns about the lead and the conversation dead-ends.
+    peer = _escalation_peer or "me"
     text = (
-        f"🚨 Эскалация\n"
+        f"🚨 Передано менеджеру\n"
         f"Причина: {reason}\n"
-        f"Телефон: {sender_phone}\n"
+        f"Телефон: {sender_phone or '—'}\n"
         f"Суть: {summary}"
     )
     try:
-        await _tg_client.send_message(_escalation_peer, text)
-        logger.info(f"[ESCALATION] Sent to {_escalation_peer}")
+        await _tg_client.send_message(peer, text)
+        logger.info(f"[ESCALATION] Sent to {peer}")
     except Exception as e:
         logger.error(f"[ESCALATION] Failed: {e}")

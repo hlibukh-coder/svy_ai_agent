@@ -1,0 +1,64 @@
+"""Проверка: агент отвечает про наличие/цены/артикулы из живой базы (PG/BAS)."""
+import asyncio, json, logging, os
+from dotenv import load_dotenv
+load_dotenv()
+import asyncpg
+from openai import AsyncOpenAI
+from src import bas, context, tools
+from src.prompt import build_system_prompt
+from sync import scheduler_sync
+
+logging.basicConfig(level=logging.WARNING)
+DATABASE_URL = os.getenv("DATABASE_URL", "")
+client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY", ""))
+C_RESET="\033[0m"; C_USER="\033[96m"; C_BOT="\033[92m"; C_TOOL="\033[93m"; C_HEAD="\033[1;95m"
+
+
+async def run_turn(messages, phone):
+    tool_log = []
+    for _ in range(6):
+        resp = await client.chat.completions.create(
+            model="gpt-4o", messages=messages, tools=tools.TOOLS_SCHEMA, tool_choice="auto")
+        msg = resp.choices[0].message
+        if not msg.tool_calls:
+            return msg.content or "", tool_log
+        messages.append(msg)
+        for tc in msg.tool_calls:
+            try: args = json.loads(tc.function.arguments)
+            except json.JSONDecodeError: args = {}
+            result = await tools.execute_tool(tc.function.name, args, phone)
+            tool_log.append((tc.function.name, args, result))
+            messages.append({"role": "tool", "tool_call_id": tc.id, "content": result})
+    resp = await client.chat.completions.create(model="gpt-4o", messages=messages)
+    return resp.choices[0].message.content or "", tool_log
+
+
+async def scenario(title, phone, turns):
+    print(f"\n{C_HEAD}{'='*78}\n  {title}\n{'='*78}{C_RESET}")
+    system_prompt = build_system_prompt(None, [])
+    messages = [{"role": "system", "content": system_prompt}]
+    for user_text in turns:
+        print(f"\n{C_USER}👤 КЛІЄНТ: {user_text}{C_RESET}")
+        messages.append({"role": "user", "content": user_text})
+        reply, tool_log = await run_turn(messages, phone or "")
+        for name, args, result in tool_log:
+            short = result if len(result) < 500 else result[:500] + "…"
+            print(f"{C_TOOL}   🔧 {name}({json.dumps(args, ensure_ascii=False)})")
+            print(f"{C_TOOL}      → {short}{C_RESET}")
+        messages.append({"role": "assistant", "content": reply})
+        print(f"{C_BOT}🤖 АГЕНТ: {reply}{C_RESET}")
+
+
+async def main():
+    pool = await asyncpg.create_pool(DATABASE_URL, min_size=1, max_size=3)
+    scheduler_sync._pool = pool
+    await context.init_db()
+    await scenario("НАЯВНІСТЬ ТОВАРУ З БАЗИ (болти М5–М10)", None, [
+        "Добрий день! Є у вас болти М5, М6, М8, М10?",
+        "Скільки коштує М8х50 і скільки є на складі?",
+    ])
+    await pool.close()
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
