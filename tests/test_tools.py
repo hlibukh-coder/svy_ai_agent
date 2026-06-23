@@ -15,14 +15,14 @@ from src.tools import execute_tool, TOOLS_SCHEMA, set_tg_client
 
 def test_tools_schema_is_list():
     assert isinstance(TOOLS_SCHEMA, list)
-    assert len(TOOLS_SCHEMA) == 7
+    assert len(TOOLS_SCHEMA) == 8
 
 
 def test_tools_schema_names():
     names = {t["function"]["name"] for t in TOOLS_SCHEMA}
     assert names == {
         "get_products", "get_client", "get_orders", "create_order",
-        "get_order_status", "check_supplier", "notify_manager",
+        "get_order_status", "check_supplier", "notify_manager", "send_file",
     }
 
 

@@ -1,0 +1,216 @@
+"""
+WhatsApp via WAHA (https://waha.devlike.pro) — REST out, webhook in.
+
+Credentials (accounts table): {
+  "base_url": "http://localhost:3000",   # WAHA server
+  "api_key": "...",                      # X-Api-Key (optional, if WAHA secured)
+  "session_name": "default",             # WAHA session
+  "webhook_secret": "...",               # checked on inbound webhook (auto-generated)
+  "escalation_peer": "<num>@c.us"        # optional per-account hand-off target
+}
+Inbound arrives at POST /webhooks/waha/{account_id}?token=<webhook_secret>.
+"""
+import base64
+import logging
+import os
+import re
+
+import httpx
+
+from src import accounts as account_manager
+from src.channels.base import ChannelAdapter, InboundMessage, OutboundResult
+
+logger = logging.getLogger(__name__)
+
+PUBLIC_URL = os.getenv("PUBLIC_URL", "http://localhost:8000").rstrip("/")
+_WHATSAPP_MAX = 64 * 1024 * 1024  # WAHA/WhatsApp document cap (~64–100MB)
+
+
+def phone_to_chatid(phone: str) -> str:
+    digits = re.sub(r"\D", "", phone or "")
+    return f"{digits}@c.us" if digits else (phone or "")
+
+
+def chatid_to_phone(chat_id: str) -> str:
+    num = (chat_id or "").split("@")[0]
+    return f"+{num}" if num.isdigit() else ""
+
+
+class WahaAdapter(ChannelAdapter):
+    channel = "whatsapp"
+
+    def __init__(self, account_id, label, credentials, on_inbound):
+        super().__init__(account_id, label, credentials, on_inbound)
+        self.base_url = (self.credentials.get("base_url") or "").rstrip("/")
+        self.api_key = self.credentials.get("api_key") or ""
+        self.session = self.credentials.get("session_name") or "default"
+        self.webhook_secret = self.credentials.get("webhook_secret") or ""
+        self._http: httpx.AsyncClient | None = None
+
+    def _client(self) -> httpx.AsyncClient:
+        if self._http is None:
+            headers = {"X-Api-Key": self.api_key} if self.api_key else {}
+            self._http = httpx.AsyncClient(base_url=self.base_url, headers=headers, timeout=30)
+        return self._http
+
+    def _webhook_url(self) -> str:
+        url = f"{PUBLIC_URL}/webhooks/waha/{self.account_id}"
+        if self.webhook_secret:
+            url += f"?token={self.webhook_secret}"
+        return url
+
+    def peer_for_phone(self, phone: str) -> str:
+        return phone_to_chatid(phone)
+
+    def max_file_bytes(self) -> int:
+        return _WHATSAPP_MAX
+
+    # ── lifecycle ────────────────────────────────────────────────────────────
+    async def start(self) -> None:
+        if not self.base_url:
+            await account_manager.update_status(self.account_id, "error", "no base_url")
+            return
+        try:
+            status = await self._session_status()
+            await account_manager.update_status(
+                self.account_id, "authorized" if status == "WORKING" else "disconnected")
+            logger.info(f"[WAHA:{self.account_id}] session '{self.session}' status={status}")
+        except Exception as e:
+            await account_manager.update_status(self.account_id, "error", str(e))
+            logger.error(f"[WAHA:{self.account_id}] start failed: {e}")
+
+    async def stop(self) -> None:
+        if self._http is not None:
+            try:
+                await self._http.aclose()
+            except Exception:
+                pass
+            self._http = None
+
+    async def _session_status(self) -> str:
+        r = await self._client().get(f"/api/sessions/{self.session}")
+        if r.status_code == 404:
+            return "STOPPED"
+        r.raise_for_status()
+        data = r.json()
+        return (data.get("status") or data.get("state") or "UNKNOWN").upper()
+
+    # ── pairing (dashboard connect/QR) ───────────────────────────────────────
+    async def begin_qr(self) -> dict:
+        """Ensure the session exists (with our webhook) and return a QR to scan."""
+        # Create-or-update the session with our webhook config (idempotent-ish).
+        cfg = {"webhooks": [{"url": self._webhook_url(), "events": ["message"]}]}
+        try:
+            await self._client().post("/api/sessions",
+                                      json={"name": self.session, "start": True, "config": cfg})
+        except Exception:
+            pass
+        # Make sure it is started.
+        try:
+            await self._client().post(f"/api/sessions/{self.session}/start")
+        except Exception:
+            pass
+        status = await self._session_status()
+        if status == "WORKING":
+            await self._mark_authorized()
+            return {"status": "authorized"}
+        img = await self._fetch_qr()
+        await account_manager.update_status(self.account_id, "connecting")
+        return {"status": "waiting", "image": img} if img else {"status": "waiting"}
+
+    async def qr_poll(self) -> dict:
+        try:
+            status = await self._session_status()
+        except Exception as e:
+            return {"status": "error", "error": str(e)}
+        if status == "WORKING":
+            await self._mark_authorized()
+            return {"status": "authorized"}
+        img = await self._fetch_qr()
+        return {"status": "waiting", "image": img} if img else {"status": "waiting"}
+
+    async def _mark_authorized(self) -> None:
+        await account_manager.update_status(self.account_id, "authorized")
+        await account_manager.save_session(self.account_id, self.session)
+
+    async def _fetch_qr(self) -> str | None:
+        """Return a data: URL of the pairing QR, or None."""
+        for path in (f"/api/{self.session}/auth/qr", f"/api/sessions/{self.session}/auth/qr"):
+            try:
+                r = await self._client().get(path, params={"format": "image"})
+                if r.status_code != 200:
+                    continue
+                ctype = r.headers.get("content-type", "")
+                if ctype.startswith("image/"):
+                    b64 = base64.b64encode(r.content).decode()
+                    return f"data:{ctype};base64,{b64}"
+                data = r.json()
+                raw = data.get("data") or data.get("qr")
+                mt = data.get("mimetype", "image/png")
+                if raw:
+                    return raw if str(raw).startswith("data:") else f"data:{mt};base64,{raw}"
+            except Exception:
+                continue
+        return None
+
+    async def healthcheck(self) -> dict:
+        try:
+            status = await self._session_status()
+            return {"status": "authorized" if status == "WORKING" else "disconnected",
+                    "engine_status": status}
+        except Exception as e:
+            return {"status": "disconnected", "error": str(e)}
+
+    # ── inbound webhook ──────────────────────────────────────────────────────
+    async def handle_webhook(self, payload: dict) -> None:
+        if (payload or {}).get("event") != "message":
+            return
+        p = payload.get("payload", {}) or {}
+        if p.get("fromMe"):
+            return  # echo of our own send
+        external_id = str(p.get("id", ""))
+        if self.is_duplicate(external_id):
+            return
+        peer = p.get("from", "")
+        msg = InboundMessage(
+            channel="whatsapp", account_id=self.account_id, peer=peer,
+            text=p.get("body", "") or "",
+            sender_phone=chatid_to_phone(peer),
+            sender_name=p.get("notifyName", "") or p.get("pushName", "") or "",
+            external_id=external_id, raw=payload,
+        )
+        await self._on_inbound(msg)
+
+    # ── outbound ─────────────────────────────────────────────────────────────
+    async def send_text(self, peer: str, text: str) -> OutboundResult:
+        try:
+            r = await self._client().post(
+                "/api/sendText", json={"session": self.session, "chatId": peer, "text": text})
+            r.raise_for_status()
+            return OutboundResult(ok=True)
+        except Exception as e:
+            return OutboundResult(ok=False, error=str(e))
+
+    async def send_file(self, peer, file, caption="", filename="", mimetype="") -> OutboundResult:
+        try:
+            if isinstance(file, (bytes, bytearray)):
+                data_b64 = base64.b64encode(bytes(file)).decode()
+                file_obj = {"mimetype": mimetype or "application/octet-stream",
+                            "filename": filename or "file", "data": data_b64}
+            elif isinstance(file, str) and (file.startswith("http://") or file.startswith("https://")):
+                file_obj = {"mimetype": mimetype or "application/octet-stream",
+                            "filename": filename or "file", "url": file}
+            else:  # local path
+                with open(file, "rb") as fh:
+                    data_b64 = base64.b64encode(fh.read()).decode()
+                file_obj = {"mimetype": mimetype or "application/octet-stream",
+                            "filename": filename or os.path.basename(str(file)), "data": data_b64}
+            endpoint = "/api/sendImage" if (mimetype or "").startswith("image/") else "/api/sendFile"
+            body = {"session": self.session, "chatId": peer, "file": file_obj}
+            if caption:
+                body["caption"] = caption
+            r = await self._client().post(endpoint, json=body)
+            r.raise_for_status()
+            return OutboundResult(ok=True)
+        except Exception as e:
+            return OutboundResult(ok=False, error=str(e))

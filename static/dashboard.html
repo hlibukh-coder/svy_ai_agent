@@ -118,6 +118,7 @@
         <div class="panel"><h3>Розподіл по каналах</h3>
           <div class="donut"><canvas id="pie" width="120" height="120"></canvas>
           <div class="legend" id="legend"></div></div>
+          <div id="byChannel" style="margin-top:12px"></div>
         </div>
       </div>
     </div>
@@ -181,6 +182,32 @@
         <div id="tgQr" style="width:200px;height:200px;flex-shrink:0"></div>
       </div>
     </div>
+
+    <div class="panel">
+      <h3>Акаунти / Канали</h3>
+      <p style="font-size:12px;color:#8a93a3;margin-bottom:12px">Підключайте декілька акаунтів кожного каналу (Telegram, WhatsApp через WAHA, Email, Viber). Вхідні та вихідні повідомлення йдуть через відповідний акаунт; аналітика рахує, що і з якого каналу.</p>
+      <div id="accountsBox" style="font-size:13px">Завантаження…</div>
+      <div style="margin-top:16px;border-top:1px solid #eee;padding-top:14px">
+        <h4 style="margin:0 0 8px">Додати акаунт</h4>
+        <select id="newAccCh" onchange="renderAddForm()" style="border:1px solid #d8dce4;border-radius:6px;padding:7px 9px;font-size:13px">
+          <option value="telegram">Telegram</option>
+          <option value="whatsapp">WhatsApp (WAHA)</option>
+          <option value="email">Email (IMAP/SMTP)</option>
+          <option value="viber">Viber</option>
+        </select>
+        <div id="addForm" style="margin-top:10px"></div>
+      </div>
+      <div id="acctQrWrap" style="display:none;margin-top:14px;border-top:1px solid #eee;padding-top:14px">
+        <div id="acctQrStatus" style="font-size:13px;margin-bottom:8px"></div>
+        <div id="acctQr" style="width:210px;height:210px"></div>
+        <div id="acctHint" style="font-size:12px;color:#8a93a3;margin-top:8px;max-width:380px"></div>
+        <div id="acctPwd" style="display:none;margin-top:10px">
+          <input type="password" id="acctPwdInput" placeholder="Пароль 2FA" style="border:1px solid #d8dce4;border-radius:7px;padding:8px 10px;font-size:13px;width:200px">
+          <button class="btn" onclick="acctPassword()">Підтвердити</button>
+        </div>
+      </div>
+    </div>
+
     <div class="panel set">
       <h3>Промпт агента</h3>
       <label>Системний промпт (порожньо = вбудований за замовчуванням)</label>
@@ -208,7 +235,9 @@
 </main>
 
 <script>
-const CH_COLORS={Telegram:'#2d9be0',WhatsApp:'#3fbf63',Viber:'#7c4dde','Телефон':'#f5a623'};
+const CH_COLORS={Telegram:'#2d9be0',WhatsApp:'#3fbf63',Viber:'#7c4dde',Email:'#f5a623','Телефон':'#f5a623'};
+const CH_LABEL={telegram:'Telegram',whatsapp:'WhatsApp',email:'Email',viber:'Viber'};
+const ST_LABEL={authorized:'✅ підключено',connecting:'🟡 підключення',disconnected:'⚪ не підключено',error:'🔴 помилка'};
 function switchTab(t){
   document.querySelectorAll('.tab-btn').forEach(b=>b.classList.toggle('active',b.dataset.tab===t));
   document.querySelectorAll('.tab').forEach(s=>s.classList.toggle('active',s.id==='tab-'+t));
@@ -236,7 +265,8 @@ async function loadOverview(){
     document.getElementById('activeDlg').innerHTML=d.length?d.map(r=>{
       const cls=r.status.includes('Очік')?'wait':r.status.includes('оформл')?'done':'work';
       const col=CH_COLORS[r.channel]||'#999';
-      return `<tr><td>${esc(r.name)}</td><td><span class="ch"><i style="background:${col}"></i>${r.channel}</span></td><td><span class="pill ${cls}">${esc(r.status)}</span></td><td style="color:#9aa3b2">${fmtTime(r.last_ts)}</td></tr>`;
+      const acc=r.account?' · '+esc(r.account):'';
+      return `<tr><td>${esc(r.name)}</td><td><span class="ch"><i style="background:${col}"></i>${r.channel}${acc}</span></td><td><span class="pill ${cls}">${esc(r.status)}</span></td><td style="color:#9aa3b2">${fmtTime(r.last_ts)}</td></tr>`;
     }).join(''):'<tr><td colspan=4 class="muted">Поки немає</td></tr>';
   }catch(e){}
   try{const op=await j('/api/stats/opportunities');
@@ -250,6 +280,14 @@ async function loadOverview(){
     document.getElementById('feed').innerHTML=ev.length?ev.map(e=>`<div class="it"><span class="t">${fmtTime(e.ts)}</span><span>${ic[e.kind]||'•'} ${esc(e.title)}</span></div>`).join(''):'<div class="muted">Поки немає дій</div>';
   }catch(e){}
   try{drawChannels(await j('/api/stats/channels'))}catch(e){}
+  try{drawByChannel(await j('/api/stats/by-channel'))}catch(e){}
+}
+function drawByChannel(rows){
+  const el=document.getElementById('byChannel');if(!el)return;
+  if(!rows||!rows.length){el.innerHTML='';return;}
+  el.innerHTML='<table style="width:100%;font-size:12px;border-collapse:collapse"><thead><tr style="color:#8a93a3;text-align:left"><th>Канал</th><th>Акаунт</th><th>Діалоги</th><th>Замовл.</th><th>Сума</th></tr></thead><tbody>'+
+    rows.map(r=>`<tr><td><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${CH_COLORS[r.channel]||'#999'};margin-right:5px"></span>${esc(r.channel)}</td><td style="color:#6b7280">${esc(r.account_label||'')}</td><td>${r.dialogs}</td><td>${r.orders}</td><td>${Math.round(r.sales)} грн</td></tr>`).join('')+
+    '</tbody></table>';
 }
 function drawChannels(ch){
   const cv=document.getElementById('pie'),x=cv.getContext('2d'),tot=ch.reduce((a,b)=>a+b.count,0)||1;
@@ -286,6 +324,88 @@ async function loadConfig(){
     CFG_BOOLS.forEach(f=>document.getElementById(f).checked=!!c[f]);
   }catch(e){}
   tgRefreshStatus();
+  renderAddForm();
+  loadAccounts();
+}
+
+// ── Accounts / channels management ──
+let acctQrId=null, acctQrCh=null, acctQrPolling=false;
+async function loadAccounts(){
+  const box=document.getElementById('accountsBox');if(!box)return;
+  try{
+    const accs=await j('/api/accounts');
+    if(!accs.length){box.innerHTML='<div class="muted">Немає акаунтів</div>';return;}
+    const groups={};accs.forEach(a=>{(groups[a.channel]=groups[a.channel]||[]).push(a)});
+    box.innerHTML=Object.keys(groups).map(ch=>{
+      const col=CH_COLORS[CH_LABEL[ch]]||'#999';
+      const rows=groups[ch].map(a=>{
+        const st=ST_LABEL[a.status]||esc(a.status);const m=a.meta||{};
+        const sub=esc(m.phone||m.name||m.last_error||'');
+        const del=a.id===1?'':`<button onclick="acctDelete(${a.id})" style="background:none;border:none;color:#e0524d;cursor:pointer;font-size:12px">видалити</button>`;
+        const conn=(ch==='telegram'||ch==='whatsapp')
+          ?`<button onclick="acctQrStart(${a.id},'${ch}')" style="background:none;border:none;color:#2d9be0;cursor:pointer;font-size:12px">QR</button>`
+          :`<button onclick="acctConnect(${a.id})" style="background:none;border:none;color:#2d9be0;cursor:pointer;font-size:12px">підключити</button>`;
+        return `<div style="display:flex;align-items:center;gap:10px;padding:5px 0"><span style="font-weight:600">${esc(a.label)}</span><span style="color:#8a93a3;font-size:12px">${st} ${sub}</span><label class="sw" style="transform:scale(.8)"><input type="checkbox" ${a.enabled?'checked':''} onchange="acctToggle(${a.id},this.checked)"><span class="sl"></span></label>${conn} ${del}</div>`;
+      }).join('');
+      return `<div style="margin-bottom:12px"><div style="display:flex;align-items:center;gap:6px;font-weight:700;margin-bottom:2px"><i style="width:10px;height:10px;border-radius:50%;background:${col};display:inline-block"></i>${CH_LABEL[ch]||ch}</div>${rows}</div>`;
+    }).join('');
+  }catch(e){box.innerHTML='<div class="muted">Помилка: '+esc(e)+'</div>';}
+}
+const ACC_FORMS={
+  telegram:`<input class="afi" id="af_label" placeholder="Назва (напр. Telegram #2)">`,
+  whatsapp:`<input class="afi" id="af_label" placeholder="Назва"><input class="afi" id="af_base_url" placeholder="WAHA base_url (http://localhost:3000)"><input class="afi" id="af_api_key" placeholder="API key (необов'язково)"><input class="afi" id="af_session_name" placeholder="session (default)">`,
+  email:`<input class="afi" id="af_label" placeholder="Назва"><input class="afi" id="af_imap_host" placeholder="IMAP host"><input class="afi" id="af_imap_port" placeholder="IMAP port (993)"><input class="afi" id="af_smtp_host" placeholder="SMTP host"><input class="afi" id="af_smtp_port" placeholder="SMTP port (465)"><input class="afi" id="af_user" placeholder="E-mail / логін"><input class="afi" id="af_password" type="password" placeholder="Пароль">`,
+  viber:`<input class="afi" id="af_label" placeholder="Назва"><input class="afi" id="af_bot_token" placeholder="Viber bot token">`
+};
+function renderAddForm(){
+  const sel=document.getElementById('newAccCh');if(!sel)return;
+  const ch=sel.value;
+  document.getElementById('addForm').innerHTML=
+    '<style>.afi{display:block;width:300px;max-width:100%;margin:5px 0;border:1px solid #d8dce4;border-radius:6px;padding:7px 9px;font-size:13px}</style>'+
+    (ACC_FORMS[ch]||'')+`<button class="btn" style="margin-top:8px" onclick="addAccount()">Додати</button>`;
+}
+function _v(id){const e=document.getElementById(id);return e?e.value.trim():''}
+async function addAccount(){
+  const ch=document.getElementById('newAccCh').value;
+  const label=_v('af_label')||(CH_LABEL[ch]||ch);let creds={};
+  if(ch==='whatsapp')creds={base_url:_v('af_base_url'),api_key:_v('af_api_key'),session_name:_v('af_session_name')||'default'};
+  else if(ch==='email')creds={imap_host:_v('af_imap_host'),imap_port:Number(_v('af_imap_port')||993),smtp_host:_v('af_smtp_host'),smtp_port:Number(_v('af_smtp_port')||465),user:_v('af_user'),password:_v('af_password'),use_ssl:true};
+  else if(ch==='viber')creds={bot_token:_v('af_bot_token')};
+  try{await j('/api/accounts',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({channel:ch,label,credentials:creds})});
+    renderAddForm();loadAccounts();
+  }catch(e){alert('Помилка: '+e)}
+}
+async function acctToggle(id,on){try{await j('/api/accounts/'+id,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled:on})});if(on){try{await j('/api/accounts/'+id+'/connect',{method:'POST'})}catch(e){}}loadAccounts();}catch(e){alert('Помилка: '+e)}}
+async function acctDelete(id){if(!confirm('Видалити акаунт?'))return;try{await j('/api/accounts/'+id,{method:'DELETE'});loadAccounts();}catch(e){alert('Помилка: '+e)}}
+async function acctConnect(id){try{const r=await j('/api/accounts/'+id+'/connect',{method:'POST'});alert('Статус: '+(r.status||'')+(r.health&&r.health.error?' — '+r.health.error:''));loadAccounts();}catch(e){alert('Помилка: '+e)}}
+async function acctQrStart(id,ch){
+  acctQrId=id;acctQrCh=ch;acctQrPolling=false;
+  const wrap=document.getElementById('acctQrWrap'),qr=document.getElementById('acctQr'),st=document.getElementById('acctQrStatus');
+  wrap.style.display='';qr.innerHTML='';st.textContent='Підключення…';document.getElementById('acctPwd').style.display='none';
+  document.getElementById('acctHint').textContent=ch==='telegram'?'Telegram → Налаштування → Пристрої → Підключити пристрій → скануйте QR.':"Відскануйте QR у WhatsApp → Пов'язані пристрої.";
+  try{const r=await j('/api/accounts/'+id+'/qr/start',{method:'POST'});
+    _renderQr(r);
+    if(r.status==='authorized'){st.textContent='✅ підключено';wrap.style.display='none';loadAccounts();return;}
+    acctQrPolling=true;acctQrPoll();
+  }catch(e){st.textContent='Помилка: '+e;}
+}
+function _renderQr(r){const qr=document.getElementById('acctQr');if(r.svg)qr.innerHTML=r.svg;else if(r.image)qr.innerHTML='<img src="'+r.image+'" style="width:200px;height:200px">';}
+async function acctQrPoll(){
+  if(!acctQrPolling)return;const st=document.getElementById('acctQrStatus');
+  try{const r=await j('/api/accounts/'+acctQrId+'/qr/poll');
+    if(r.status==='authorized'){acctQrPolling=false;st.textContent='✅ підключено';document.getElementById('acctQrWrap').style.display='none';loadAccounts();return;}
+    if(r.status==='password'){document.getElementById('acctPwd').style.display='';st.textContent='Увімкнено 2FA — введіть пароль.';}
+    _renderQr(r);
+    if(r.status==='error'){acctQrPolling=false;st.textContent='Помилка: '+(r.error||'');return;}
+  }catch(e){}
+  setTimeout(acctQrPoll,2500);
+}
+async function acctPassword(){
+  const p=document.getElementById('acctPwdInput').value;
+  try{const r=await j('/api/accounts/'+acctQrId+'/qr/password',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:p})});
+    if(r.status==='authorized'){acctQrPolling=false;document.getElementById('acctQrWrap').style.display='none';loadAccounts();}
+    else document.getElementById('acctQrStatus').textContent='Невірний пароль, спробуйте ще раз.';
+  }catch(e){}
 }
 
 // ── Telegram QR login ──

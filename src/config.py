@@ -54,6 +54,12 @@ async def ensure_tables():
                 "  title TEXT NOT NULL,"
                 "  meta JSONB DEFAULT '{}'::jsonb)"
             )
+            # Channel/account attribution on AI orders (idempotent; orders table from migration.sql).
+            try:
+                await conn.execute("ALTER TABLE orders ADD COLUMN IF NOT EXISTS channel TEXT")
+                await conn.execute("ALTER TABLE orders ADD COLUMN IF NOT EXISTS account_id INTEGER")
+            except Exception as e:
+                logger.warning(f"[CONFIG] orders attribution columns: {e}")
         logger.info("[CONFIG] tables ready")
     except Exception as e:
         logger.error(f"[CONFIG] ensure_tables error: {e}")

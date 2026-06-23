@@ -27,7 +27,9 @@ CREATE TABLE IF NOT EXISTS orders (
     number         TEXT,
     date           DATE,
     client_ref_key TEXT,
-    amount         NUMERIC DEFAULT 0
+    amount         NUMERIC DEFAULT 0,
+    channel        TEXT,           -- channel the AI order came from (telegram/whatsapp/email/viber)
+    account_id     INTEGER         -- which connected account produced the sale
 );
 
 CREATE TABLE IF NOT EXISTS stock (

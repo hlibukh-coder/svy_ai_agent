@@ -147,7 +147,7 @@ async def test_send_reply_isolates_failures(monkeypatch):
 async def test_ensure_handoff_escalates_on_promise(monkeypatch):
     calls = []
 
-    async def _fake_exec(name, args, phone):
+    async def _fake_exec(name, args, phone, conv=None):
         calls.append(name)
         return "{}"
 
@@ -161,7 +161,7 @@ async def test_ensure_handoff_escalates_on_promise(monkeypatch):
 async def test_ensure_handoff_skips_when_create_order_already_ran(monkeypatch):
     calls = []
 
-    async def _fake_exec(name, args, phone):
+    async def _fake_exec(name, args, phone, conv=None):
         calls.append(name)
         return "{}"
 

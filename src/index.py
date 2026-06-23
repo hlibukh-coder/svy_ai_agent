@@ -90,8 +90,10 @@ async def get_sender_phone(tg_client: TelegramClient, sender: User) -> str:
     return ""
 
 
-async def run_openai(messages: list, sender_phone: str) -> tuple[str, set]:
-    """Run OpenAI with function calling loop. Returns (reply, set_of_called_tools)."""
+async def run_openai(messages: list, sender_phone: str, conv: dict | None = None) -> tuple[str, set]:
+    """Run OpenAI with function calling loop. Returns (reply, set_of_called_tools).
+    `conv` carries the channel/account/peer context so tools (send_file, escalation)
+    can act on the originating conversation."""
     called: set = set()
     for _ in range(MAX_TOOL_ITERATIONS):
         response = await openai_client.chat.completions.create(
@@ -116,7 +118,7 @@ async def run_openai(messages: list, sender_phone: str) -> tuple[str, set]:
                 fn_args = {}
 
             logger.info(f"[TOOL CALL] {fn_name} args={fn_args}")
-            result = await tools.execute_tool(fn_name, fn_args, sender_phone)
+            result = await tools.execute_tool(fn_name, fn_args, sender_phone, conv=conv)
             logger.info(f"[TOOL RESULT] {fn_name} -> {result[:200]}")
 
             messages.append({
@@ -162,7 +164,7 @@ def _promised_handoff(reply: str) -> bool:
     return bool(_HANDOFF_RE.search(low))
 
 
-async def _ensure_handoff(reply: str, called: set, summary: str, phone: str):
+async def _ensure_handoff(reply: str, called: set, summary: str, phone: str, conv: dict | None = None):
     """Completion guarantee: if the agent PROMISED a hand-off but no terminal tool
     (notify_manager / create_order) fired, escalate anyway so nothing dead-ends."""
     if called & {"notify_manager", "create_order"}:
@@ -174,6 +176,7 @@ async def _ensure_handoff(reply: str, called: set, summary: str, phone: str):
             "notify_manager",
             {"reason": "complex_question", "summary": (reply[:300] or (summary or "")[:300])},
             phone,
+            conv=conv,
         )
         logger.info("[SAFETY] auto-escalated a promised hand-off")
     except Exception as e:
@@ -237,168 +240,71 @@ async def _send_reply(tg_client, event, reply: str):
             logger.error(f"[SEND] respond failed: {e}")
 
 
-async def handle_message(tg_client: TelegramClient, event):
-    sender: User = await event.get_sender()
+# NOTE: inbound message handling now lives in the channel-agnostic router
+# (src/channels/router.py); the Telegram-specific glue is in
+# src/channels/telegram_adapter.py. `_send_reply` and the helpers above are kept
+# for reuse/back-compat.
 
-    if not sender or not isinstance(sender, User):
-        return
-    if MANAGER_TG_ID and sender.id == MANAGER_TG_ID:
-        return
-    if not event.is_private:
-        return
 
-    chat_id = str(event.chat_id)
-    user_text = event.raw_text.strip()
-    if not user_text:
-        return
+async def send_to_client(phone: str, text: str, channel: str = "telegram",
+                         account_id: int | None = None) -> dict:
+    """Send an outbound message to a client by phone; the agent composes the reply.
+    Routes through the channel adapter registry (Telegram by default)."""
+    from src.channels import registry
 
-    logger.info(f"[IN] chat={chat_id} user={sender.id} text={user_text[:80]}")
-
-    # Master switch: if the agent is paused, record the message but don't reply
-    if not await config.get_value("agent_enabled", True):
-        await context.save_message(chat_id, "user", user_text)
-        logger.info(f"[IN] agent paused — saved but not replying ({chat_id})")
-        return
-
-    # Per-chat human takeover: an operator is handling this chat → record but stay silent
-    if await context.is_chat_paused(chat_id):
-        await context.save_message(chat_id, "user", user_text)
-        logger.info(f"[IN] chat {chat_id} under human control — AI silent")
-        return
-
-    # Hint for initial setup: log chat_id of anyone who messages us
-    if not ESCALATION_CHAT_ID:
-        logger.info(f"[HINT] ESCALATION_CHAT_ID not set. Add to .env: ESCALATION_CHAT_ID={chat_id}")
-
-    async with tg_client.action(event.chat_id, "typing"):
-
-        # ── Step 1: resolve client identity ──────────────────────────────────
-        linked = await context.get_linked_client(chat_id)
-
-        client_data = None
-        phone = ""
-
-        if linked:
-            # Already identified — load from PG directly
-            phone = linked["phone"] or ""
-            if linked["client_ref_key"]:
-                client_data = await bas.get_client(phone) if phone else None
-                if not client_data and linked["client_ref_key"]:
-                    # Build minimal client_data from stored info
-                    client_data = {
-                        "id": linked["client_ref_key"],
-                        "name": linked["name"],
-                        "phone": phone,
-                        "company": "",
-                        "city": "",
-                    }
-            elif phone:
-                # Phone known but no BAS match yet — re-check (manager may have added them)
-                client_data = await _resolve_and_link(chat_id, phone)
-        else:
-            # Try Telegram-provided phone (only works if user is in contacts)
-            tg_phone = await get_sender_phone(tg_client, sender)
-            if tg_phone:
-                client_data = await _resolve_and_link(chat_id, tg_phone)
-                phone = tg_phone
-            else:
-                # Try to extract phone from the message itself
-                extracted = _extract_phone(user_text)
-                if extracted:
-                    client_data = await _resolve_and_link(chat_id, extracted)
-                    phone = extracted
-
-        # ── Step 2: load orders if client known ──────────────────────────────
-        orders = []
-        if client_data:
-            orders = await bas.get_orders(client_data["id"])
-
-        # ── Step 3: build prompt and run agent ───────────────────────────────
-        cfg_prompt = await config.get_value("system_prompt", "")
-        system_prompt = build_system_prompt(client_data, orders, base_prompt=cfg_prompt or None)
-        history = await context.load_history(chat_id, limit=20)
-
-        messages = [{"role": "system", "content": system_prompt}]
-        messages.extend(history)
-        messages.append({"role": "user", "content": user_text})
-
-        await context.save_message(chat_id, "user", user_text)
-
-        ok = True
+    entity = None
+    if channel == "telegram":
+        adapter = registry.get("telegram", account_id) if account_id else registry.default_telegram()
+        tgclient = (adapter.client if adapter else None) or _tg_client
+        if tgclient is None:
+            return {"ok": False, "error": "Telegram client not running"}
         try:
-            reply, called = await run_openai(messages, phone)
+            entity = await tgclient.get_entity(phone)
         except Exception as e:
-            logger.error(f"OpenAI error: {e}")
-            reply, called, ok = "Вибачте, сталася помилка. Спробуйте ще раз.", set(), False
+            logger.error(f"[SEND] Cannot resolve {phone}: {e}")
+            return {"ok": False, "error": f"Cannot resolve phone: {e}"}
+        peer = str(entity.id)
+        acc = adapter.account_id if adapter else context.LEGACY_TG_ACCOUNT_ID
+    else:
+        adapter = (registry.get(channel, account_id) if account_id
+                   else next(iter(registry.adapters_for_channel(channel)), None))
+        if adapter is None:
+            return {"ok": False, "error": f"{channel} not connected"}
+        peer = adapter.peer_for_phone(phone)
+        acc = adapter.account_id
 
-        # ── Step 3b: completion guarantee — a promised hand-off MUST really escalate
-        if ok:
-            await _ensure_handoff(reply, called, user_text, phone)
-
-        # Never send an empty message (e.g. a tool-only turn) — give a real next step
-        if not (reply or "").strip():
-            reply = (
-                "Дякую! Передав ваш запит, менеджер зв'яжеться з вами найближчим часом."
-                if called & {"create_order", "notify_manager"}
-                else "Хвилинку, уточню і повернусь до вас."
-            )
-
-        # ── Step 4: check if reply contains a phone (client gave it mid-chat) ─
-        if not linked and not phone:
-            extracted = _extract_phone(reply)  # agent might repeat it back
-            # Also check user text again more carefully
-            extracted = _extract_phone(user_text) or extracted
-            if extracted:
-                await _resolve_and_link(chat_id, extracted)
-
-        await context.save_message(chat_id, "assistant", reply)
-
-    logger.info(f"[OUT] chat={chat_id} text={reply[:80]}")
-    await _send_reply(tg_client, event, reply)
-
-
-async def send_to_client(phone: str, text: str) -> dict:
-    """Send outbound message to a client by phone; agent composes the reply."""
-    if _tg_client is None:
-        return {"ok": False, "error": "Telegram client not running"}
-
-    try:
-        entity = await _tg_client.get_entity(phone)
-    except Exception as e:
-        logger.error(f"[SEND] Cannot resolve {phone}: {e}")
-        return {"ok": False, "error": f"Cannot resolve phone: {e}"}
-
-    chat_id = str(entity.id)
+    conv_id = f"{channel}:{acc}:{peer}"
+    conv = {"conv_id": conv_id, "channel": channel, "account_id": acc, "peer": peer, "phone": phone}
 
     client_data = await bas.get_client(phone)
-    orders = []
-    if client_data:
-        orders = await bas.get_orders(client_data["id"])
+    orders = await bas.get_orders(client_data["id"]) if client_data else []
 
     cfg_prompt = await config.get_value("system_prompt", "")
     system_prompt = build_system_prompt(client_data, orders, base_prompt=cfg_prompt or None)
-    history = await context.load_history(chat_id, limit=20)
+    history = await context.load_history(conv_id=conv_id, limit=20)
 
-    messages = [{"role": "system", "content": system_prompt}]
-    messages.extend(history)
-    messages.append({"role": "user", "content": text})
+    messages = [{"role": "system", "content": system_prompt}, *history,
+                {"role": "user", "content": text}]
 
     try:
-        reply, _called = await run_openai(messages, phone)
+        reply, _called = await run_openai(messages, phone, conv=conv)
     except Exception as e:
         logger.error(f"[SEND] OpenAI error: {e}")
         return {"ok": False, "error": str(e)}
 
-    await _ensure_handoff(reply, _called, text, phone)
+    await _ensure_handoff(reply, _called, text, phone, conv=conv)
     if not (reply or "").strip():
         reply = "Дякую! Передав ваш запит, менеджер зв'яжеться з вами найближчим часом."
 
-    await context.save_message(chat_id, "user", text)
-    await context.save_message(chat_id, "assistant", reply)
+    await context.save_message(conv_id=conv_id, role="user", content=text)
+    await context.save_message(conv_id=conv_id, role="assistant", content=reply)
 
     try:
-        await _tg_client.send_message(entity, reply)
-        logger.info(f"[SEND] Sent to {phone}: {reply[:80]}")
+        if channel == "telegram" and adapter is None:
+            await _tg_client.send_message(entity, reply)  # legacy fallback
+        else:
+            await adapter.send_reply(peer, reply)
+        logger.info(f"[SEND] Sent to {phone} via {channel}: {reply[:80]}")
     except Exception as e:
         logger.error(f"[SEND] Failed to send to {phone}: {e}")
         return {"ok": False, "error": str(e)}
@@ -407,98 +313,108 @@ async def send_to_client(phone: str, text: str) -> dict:
 
 
 async def operator_send(chat_id: str, text: str) -> dict:
-    """Send a RAW operator (human) message into a chat and pause the AI there.
-
-    Used by the dashboard so a manager can take over a conversation. The message is
-    saved to history (as the business side) and the AI stops auto-replying in this
-    chat until it is re-enabled from the dashboard.
-    """
-    if _tg_client is None:
-        return {"ok": False, "error": "Telegram не підключено"}
+    """Send a RAW operator (human) message into a conversation and pause the AI there.
+    `chat_id` may be a legacy Telegram chat_id or a full conv_id. Routes through the
+    originating channel's adapter; falls back to the legacy Telegram client."""
     text = (text or "").strip()
     if not text:
         return {"ok": False, "error": "Порожнє повідомлення"}
-    try:
-        peer = int(chat_id)
-    except (TypeError, ValueError):
-        peer = chat_id
-    try:
-        await _tg_client.send_message(peer, text)
-    except Exception as e:
-        logger.error(f"[OPERATOR] send to {chat_id} failed: {e}")
-        return {"ok": False, "error": str(e)}
-    await context.save_message(chat_id, "assistant", text)
-    await context.set_chat_ai_paused(chat_id, True)  # human took over this chat
-    logger.info(f"[OPERATOR] sent to {chat_id}; AI paused for this chat")
+    conv_id = context.as_conv_id(chat_id)
+    channel, account_id, peer = context.parse_conv_id(conv_id)
+    from src.channels import registry
+    adapter = registry.get(channel, account_id)
+    if adapter is not None:
+        res = await adapter.send_text(peer, text)
+        if not res.ok:
+            logger.error(f"[OPERATOR] send to {conv_id} failed: {res.error}")
+            return {"ok": False, "error": res.error}
+    elif channel == "telegram":
+        if _tg_client is None:
+            return {"ok": False, "error": "Telegram не підключено"}
+        try:
+            p = int(peer)
+        except (TypeError, ValueError):
+            p = peer
+        try:
+            await _tg_client.send_message(p, text)
+        except Exception as e:
+            logger.error(f"[OPERATOR] send to {conv_id} failed: {e}")
+            return {"ok": False, "error": str(e)}
+    else:
+        return {"ok": False, "error": f"{channel} не підключено"}
+    await context.save_message(conv_id=conv_id, role="assistant", content=text)
+    await context.set_chat_ai_paused(conv_id=conv_id, paused=True)  # human took over
+    logger.info(f"[OPERATOR] sent to {conv_id}; AI paused for this conversation")
+    return {"ok": True}
+
+
+async def operator_send_file(chat_id: str, file, caption: str = "", filename: str = "",
+                             mimetype: str = "") -> dict:
+    """Operator sends a FILE into a conversation from the dashboard, pausing the AI."""
+    conv_id = context.as_conv_id(chat_id)
+    channel, account_id, peer = context.parse_conv_id(conv_id)
+    from src.channels import registry
+    adapter = registry.get(channel, account_id)
+    if adapter is None:
+        return {"ok": False, "error": f"{channel} не підключено"}
+    res = await adapter.send_file(peer, file, caption=caption, filename=filename, mimetype=mimetype)
+    if not res.ok:
+        return {"ok": False, "error": res.error}
+    await context.save_message(conv_id=conv_id, role="assistant",
+                               content=("[файл] " + (filename or caption or "")).strip())
+    await context.set_chat_ai_paused(conv_id=conv_id, paused=True)
     return {"ok": True}
 
 
 async def activate_client(tg_client, start_scheduler: bool = True):
-    """Wire an AUTHORIZED client into the running app: globals, handler, scheduler.
-
-    Called both on normal startup and right after a successful QR login from the UI.
-    """
-    global _tg_client
-    _tg_client = tg_client
-    escalation_peer = int(ESCALATION_CHAT_ID) if ESCALATION_CHAT_ID else None
-    tools.set_tg_client(tg_client, escalation_peer)
-    if escalation_peer is None:
-        logger.warning(
-            "[TG] ESCALATION_CHAT_ID не задан — передачи менеджеру и уведомления о "
-            "заказах идут в Saved Messages бота. Укажите ESCALATION_CHAT_ID для "
-            "отдельного чата менеджера."
-        )
-    tg_client.add_event_handler(
-        lambda e: handle_message(tg_client, e),
-        events.NewMessage(incoming=True),
-    )
-    if start_scheduler:
-        send_hour = int(await config.get_value("send_hour", 10) or 10)
-        scheduler.start(tg_client, send_hour)
-    logger.info("[TG] client activated (handler + scheduler)")
+    """Back-compat: wrap an already-authorized Telethon client in the legacy
+    TelegramAdapter (account id=1) and register it."""
+    from src.channels import manager, registry
+    from src.channels.telegram_adapter import TelegramAdapter
+    adapter = registry.get("telegram", context.LEGACY_TG_ACCOUNT_ID)
+    if adapter is None:
+        adapter = TelegramAdapter(context.LEGACY_TG_ACCOUNT_ID, "Telegram (основний)", {}, manager.dispatch)
+        adapter.meta = {"legacy_session": "session/svy_agent"}
+        registry.register(adapter)
+    await adapter._activate(tg_client)
     return tg_client
 
 
 async def connect_and_register(start_scheduler: bool = True):
-    """
-    Connect using an EXISTING session (non-interactive) and wire up handlers +
-    proactive scheduler. Returns the client, or None if the session isn't
-    authorized yet (use the dashboard QR login, or run `python src/index.py`).
-    """
+    """Back-compat: init DB and start the legacy Telegram account (id=1) through the
+    adapter manager. Returns the client, or None if not authorized yet (use QR login)."""
     os.makedirs(os.path.dirname(os.getenv("DB_PATH", "data/history.db")), exist_ok=True)
     await context.init_db()
-
-    tg_client = TelegramClient("session/svy_agent", TG_API_ID, TG_API_HASH)
-    await tg_client.connect()
-    if not await tg_client.is_user_authorized():
-        logger.warning("[TG] session not authorized — use dashboard QR login")
-        await tg_client.disconnect()
-        return None
-
-    return await activate_client(tg_client, start_scheduler=start_scheduler)
+    from src.channels import manager, registry
+    await manager.start_account(context.LEGACY_TG_ACCOUNT_ID)
+    adapter = registry.get("telegram", context.LEGACY_TG_ACCOUNT_ID)
+    if adapter and getattr(adapter, "client", None):
+        try:
+            if await adapter.client.is_user_authorized():
+                return adapter.client
+        except Exception:
+            pass
+    logger.warning("[TG] session not authorized — use dashboard QR login")
+    return None
 
 
 async def main():
     """Standalone runner — also handles INTERACTIVE first login (SMS code)."""
     os.makedirs(os.path.dirname(os.getenv("DB_PATH", "data/history.db")), exist_ok=True)
     await context.init_db()
+    from src.channels import manager, registry
+    from src.channels.telegram_adapter import TelegramAdapter
 
     tg_client = TelegramClient("session/svy_agent", TG_API_ID, TG_API_HASH)
-
-    global _tg_client
     await tg_client.start(phone=TG_PHONE)
-    _tg_client = tg_client
     logger.info("Telegram client started")
 
-    escalation_peer = int(ESCALATION_CHAT_ID) if ESCALATION_CHAT_ID else None
-    tools.set_tg_client(tg_client, escalation_peer)
-
-    send_hour = int(await config.get_value("send_hour", 10) or 10)
-    scheduler.start(tg_client, send_hour)
-
-    @tg_client.on(events.NewMessage(incoming=True))
-    async def _handler(event):
-        await handle_message(tg_client, event)
+    adapter = registry.get("telegram", context.LEGACY_TG_ACCOUNT_ID)
+    if adapter is None:
+        adapter = TelegramAdapter(context.LEGACY_TG_ACCOUNT_ID, "Telegram (основний)", {}, manager.dispatch)
+        adapter.meta = {"legacy_session": "session/svy_agent"}
+        registry.register(adapter)
+    await adapter._activate(tg_client)
 
     logger.info("Listening for messages...")
     await tg_client.run_until_disconnected()

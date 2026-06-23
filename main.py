@@ -20,6 +20,10 @@ app = FastAPI()
 USE_MOCK = os.getenv("USE_MOCK", "true").lower() == "true"
 DATABASE_URL = os.getenv("DATABASE_URL", "")
 
+# Inbound webhooks for push channels (WAHA / Viber).
+from src.channels import webhooks as channel_webhooks
+app.include_router(channel_webhooks.router)
+
 
 class SendRequest(BaseModel):
     phone: str
@@ -78,19 +82,21 @@ async def api_chat(chat_id: str):
     from src.context import load_history, get_linked_client
     import aiosqlite
 
+    from src import context
     db_path = os.getenv("DB_PATH", "data/history.db")
+    conv_id = context.as_conv_id(chat_id)
 
     # Full history (no limit for dashboard)
     async with aiosqlite.connect(db_path) as db:
         async with db.execute(
-            "SELECT role, content, ts FROM messages WHERE chat_id=? ORDER BY ts ASC",
-            (chat_id,),
+            "SELECT role, content, ts FROM messages WHERE conv_id=? ORDER BY ts ASC",
+            (conv_id,),
         ) as cur:
             rows = await cur.fetchall()
 
     messages = [{"role": r[0], "content": r[1], "ts": r[2]} for r in rows]
 
-    linked = await get_linked_client(chat_id)
+    linked = await get_linked_client(conv_id=conv_id)
     client_info = {}
 
     if linked and not USE_MOCK and DATABASE_URL:
@@ -335,6 +341,161 @@ async def api_tg_qr_password(payload: dict):
     return await tg_auth.submit_password(payload.get("password", ""))
 
 
+# ── Accounts API (multi-channel / multi-account, dashboard-managed) ───────────
+
+@app.get("/api/accounts")
+async def api_accounts_list():
+    from src import accounts
+    return await accounts.list_accounts()
+
+
+class AccountCreate(BaseModel):
+    channel: str
+    label: str = ""
+    credentials: dict = {}
+
+
+@app.post("/api/accounts")
+async def api_accounts_create(req: AccountCreate):
+    from src import accounts
+    if req.channel not in accounts.VALID_CHANNELS:
+        raise HTTPException(status_code=400, detail="bad channel")
+    creds = dict(req.credentials or {})
+    if req.channel in ("whatsapp", "viber") and not creds.get("webhook_secret"):
+        import secrets as _secrets
+        creds["webhook_secret"] = _secrets.token_urlsafe(16)
+    new_id = await accounts.add_account(req.channel, req.label or req.channel.title(), creds)
+    return {"id": new_id}
+
+
+@app.patch("/api/accounts/{account_id}")
+async def api_accounts_update(account_id: int, payload: dict):
+    from src import accounts
+    await accounts.update_account(
+        account_id,
+        label=payload.get("label"),
+        credentials=payload.get("credentials"),
+        enabled=payload.get("enabled"),
+    )
+    return {"ok": True}
+
+
+@app.delete("/api/accounts/{account_id}")
+async def api_accounts_delete(account_id: int):
+    from src import accounts
+    from src.channels import registry
+    acct = await accounts.get_account(account_id)
+    if acct:
+        ad = registry.get(acct["channel"], account_id)
+        if ad:
+            try:
+                await ad.stop()
+            except Exception:
+                pass
+            registry.unregister(acct["channel"], account_id)
+    ok = await accounts.delete_account(account_id)
+    if not ok:
+        raise HTTPException(status_code=409, detail="Не можна видалити основний акаунт — вимкніть його")
+    return {"ok": True}
+
+
+@app.post("/api/accounts/{account_id}/connect")
+async def api_accounts_connect(account_id: int):
+    """Start/validate an account. Email/Viber connect & set status here; Telegram/
+    WhatsApp use the qr/* flow to finish pairing."""
+    from src.channels import manager, registry
+    from src import accounts
+    acct = await accounts.get_account(account_id)
+    if not acct:
+        raise HTTPException(status_code=404, detail="account not found")
+    await manager.start_account(account_id)
+    ad = registry.get(acct["channel"], account_id)
+    health = await ad.healthcheck() if ad else {"status": "error"}
+    return {"status": health.get("status", "unknown"), "health": health}
+
+
+@app.get("/api/accounts/{account_id}/status")
+async def api_accounts_status(account_id: int):
+    from src.channels import registry
+    from src import accounts
+    acct = await accounts.get_account(account_id)
+    if not acct:
+        raise HTTPException(status_code=404, detail="account not found")
+    ad = registry.get(acct["channel"], account_id)
+    return await ad.healthcheck() if ad else {"status": acct["status"]}
+
+
+@app.post("/api/accounts/{account_id}/qr/start")
+async def api_accounts_qr_start(account_id: int):
+    from src.channels import registry, manager
+    from src import accounts
+    acct = await accounts.get_account(account_id)
+    if not acct:
+        raise HTTPException(status_code=404, detail="account not found")
+    if acct["channel"] == "telegram":
+        from src import tg_auth
+        return await tg_auth.start(account_id)
+    ad = registry.get(acct["channel"], account_id)
+    if ad is None:
+        await manager.start_account(account_id)
+        ad = registry.get(acct["channel"], account_id)
+    if ad is None or not hasattr(ad, "begin_qr"):
+        raise HTTPException(status_code=400, detail="QR not supported for this channel")
+    return await ad.begin_qr()
+
+
+@app.get("/api/accounts/{account_id}/qr/poll")
+async def api_accounts_qr_poll(account_id: int):
+    from src.channels import registry
+    from src import accounts
+    acct = await accounts.get_account(account_id)
+    if not acct:
+        raise HTTPException(status_code=404, detail="account not found")
+    if acct["channel"] == "telegram":
+        from src import tg_auth
+        return await tg_auth.poll(account_id)
+    ad = registry.get(acct["channel"], account_id)
+    if ad is None or not hasattr(ad, "qr_poll"):
+        return {"status": "disconnected"}
+    return await ad.qr_poll()
+
+
+@app.post("/api/accounts/{account_id}/qr/password")
+async def api_accounts_qr_password(account_id: int, payload: dict):
+    from src import tg_auth
+    return await tg_auth.submit_password(payload.get("password", ""), account_id)
+
+
+# ── Operator file send + per-channel analytics ───────────────────────────────
+
+@app.post("/api/chat/{chat_id}/send-file")
+async def api_chat_send_file(chat_id: str, payload: dict):
+    """Operator sends a file (doc_id from docs/ or 'invoice') into a conversation."""
+    from src.index import operator_send_file
+    from src.tools import _resolve_doc
+    from src import context
+    conv_id = context.as_conv_id(chat_id)
+    channel, account_id, peer = context.parse_conv_id(conv_id)
+    conv = {"conv_id": conv_id, "channel": channel, "account_id": account_id, "peer": peer, "phone": ""}
+    linked = await context.get_linked_client(conv_id=conv_id)
+    if linked:
+        conv["phone"] = linked.get("phone", "") or ""
+    doc = await _resolve_doc(payload.get("doc_id", ""), conv)
+    if doc is None:
+        raise HTTPException(status_code=404, detail="Документ не знайдено")
+    result = await operator_send_file(conv_id, doc["src"], caption=payload.get("caption", ""),
+                                      filename=doc["filename"], mimetype=doc["mimetype"])
+    if not result.get("ok"):
+        raise HTTPException(status_code=409, detail=result.get("error", "send failed"))
+    return result
+
+
+@app.get("/api/stats/by-channel")
+async def api_stats_by_channel():
+    from src import stats
+    return await stats.by_channel()
+
+
 @app.get("/dashboard", response_class=HTMLResponse)
 async def dashboard():
     html_path = Path(__file__).parent / "static" / "dashboard.html"
@@ -347,38 +508,53 @@ async def dashboard():
 
 @app.on_event("startup")
 async def startup():
-    if USE_MOCK or not DATABASE_URL:
-        logger.info("[STARTUP] USE_MOCK=true or no DATABASE_URL — skipping PG/bot")
-        return
+    # SQLite history + accounts table always exist (even in USE_MOCK) so channels
+    # can be managed from the dashboard regardless of PostgreSQL.
     try:
-        import asyncpg
-        from sync.client import BASClient
-        from sync import scheduler_sync
-        from src import config
-
-        pool = await asyncpg.create_pool(DATABASE_URL, min_size=1, max_size=5)
-        bas_client = BASClient()
-        await scheduler_sync.init(pool, bas_client)
-        await config.ensure_tables()          # agent_config + agent_events
-        asyncio.create_task(scheduler_sync.run_now())
-        logger.info("[STARTUP] BAS sync scheduler started")
+        os.makedirs(os.path.dirname(os.getenv("DB_PATH", "data/history.db")), exist_ok=True)
+        from src import context
+        await context.init_db()
     except Exception as e:
-        logger.error(f"[STARTUP] Failed to start sync: {e}")
+        logger.error(f"[STARTUP] DB init failed: {e}")
 
-    # Connect Telegram in the SAME process so the dashboard can launch campaigns
-    try:
-        from src.index import connect_and_register
-        client = await connect_and_register(start_scheduler=True)
-        if client:
-            logger.info("[STARTUP] Telegram bot + proactive scheduler running")
-        else:
-            logger.warning("[STARTUP] Telegram not authorized — dashboard works, sending disabled")
-    except Exception as e:
-        logger.error(f"[STARTUP] Telegram connect failed: {e}")
+    if not USE_MOCK and DATABASE_URL:
+        try:
+            import asyncpg
+            from sync.client import BASClient
+            from sync import scheduler_sync
+            from src import config
+
+            pool = await asyncpg.create_pool(DATABASE_URL, min_size=1, max_size=5)
+            bas_client = BASClient()
+            await scheduler_sync.init(pool, bas_client)
+            await config.ensure_tables()          # agent_config + agent_events + orders attribution
+            asyncio.create_task(scheduler_sync.run_now())
+            logger.info("[STARTUP] BAS sync scheduler started")
+        except Exception as e:
+            logger.error(f"[STARTUP] Failed to start sync: {e}")
+    else:
+        logger.info("[STARTUP] USE_MOCK or no DATABASE_URL — skipping PG sync")
+
+    # Start ALL channel adapters (telegram/whatsapp/email/viber) from the accounts table
+    # in the BACKGROUND, so a slow/unreachable channel never blocks the dashboard.
+    # The legacy Telegram session (id=1) is included so existing behavior is preserved.
+    async def _start_adapters():
+        try:
+            from src.channels import manager
+            await manager.start_all_adapters()
+            logger.info("[STARTUP] channel adapters started")
+        except Exception as e:
+            logger.error(f"[STARTUP] adapters start failed: {e}")
+    asyncio.create_task(_start_adapters())
 
 
 @app.on_event("shutdown")
 async def shutdown():
+    try:
+        from src.channels import manager
+        await manager.stop_all_adapters()
+    except Exception:
+        pass
     if not USE_MOCK and DATABASE_URL:
         try:
             from sync import scheduler_sync

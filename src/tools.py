@@ -1,24 +1,32 @@
 import json
 import logging
+import mimetypes
 import os
 from src import bas, config
+from src import accounts as account_manager
 
 logger = logging.getLogger(__name__)
 
 ESCALATION_CHAT_ID = os.getenv("ESCALATION_CHAT_ID", "")
+DOCS_DIR = os.getenv("DOCS_DIR", "docs")
 
 TOOLS_SCHEMA = [
     {
         "type": "function",
         "function": {
             "name": "get_products",
-            "description": "Найти товар по названию или артикулу. Возвращает цену и остаток.",
+            "description": (
+                "Найти товар по НАЗВАНИЮ или по АРТИКУЛУ/КОДУ. Если клиент называет код/"
+                "артикул (напр. 'DIN 933', 'DIN-934', '12345') — ищи по нему: поиск "
+                "нормализует пробелы и дефисы и ставит точное совпадение по коду первым. "
+                "Возвращает название, код/артикул, цену и остаток."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "query": {
                         "type": "string",
-                        "description": "Название товара или артикул",
+                        "description": "Название товара ИЛИ артикул/код (передавай код как есть)",
                     }
                 },
                 "required": ["query"],
@@ -162,6 +170,31 @@ TOOLS_SCHEMA = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "send_file",
+            "description": (
+                "Отправить клиенту файл в текущий чат: прайс-лист, карточку/паспорт товара "
+                "или счёт по последнему заказу. Используй doc_id из доступного каталога "
+                "(напр. 'pricelist', 'datasheet_<артикул>') или 'invoice' для счёта."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "doc_id": {
+                        "type": "string",
+                        "description": "Идентификатор документа из каталога docs/ или 'invoice'",
+                    },
+                    "caption": {
+                        "type": "string",
+                        "description": "Короткая подпись к файлу (необязательно)",
+                    },
+                },
+                "required": ["doc_id"],
+            },
+        },
+    },
 ]
 
 # Will be set from index.py after tg client is ready
@@ -175,7 +208,7 @@ def set_tg_client(client, escalation_peer=None):
     _escalation_peer = escalation_peer
 
 
-async def execute_tool(name: str, arguments: dict, sender_phone: str = "") -> str:
+async def execute_tool(name: str, arguments: dict, sender_phone: str = "", conv: dict | None = None) -> str:
     logger.info(f"[TOOL] {name}({json.dumps(arguments, ensure_ascii=False)})")
 
     if name == "get_products":
@@ -195,6 +228,8 @@ async def execute_tool(name: str, arguments: dict, sender_phone: str = "") -> st
         return json.dumps({"orders": orders}, ensure_ascii=False)
 
     elif name == "create_order":
+        _ch = (conv or {}).get("channel", "telegram")
+        _acc = (conv or {}).get("account_id")
         result = await bas.create_order(
             client_id=arguments.get("client_id", ""),
             client_name=arguments.get("client_name", ""),
@@ -203,6 +238,8 @@ async def execute_tool(name: str, arguments: dict, sender_phone: str = "") -> st
             city=arguments.get("city", ""),
             items=arguments.get("items", []),
             comment=arguments.get("comment", ""),
+            channel=_ch,
+            account_id=_acc,
         )
         if result.get("success"):
             items_lines = "\n".join(
@@ -224,11 +261,12 @@ async def execute_tool(name: str, arguments: dict, sender_phone: str = "") -> st
             summary += f"Сума: {result.get('total', 0)} грн"
             if arguments.get("comment"):
                 summary += f"\nКомент: {arguments['comment']}"
-            await _send_escalation("order_created", summary, sender_phone)
+            await _send_escalation("order_created", summary, sender_phone, conv=conv)
             await config.log_event(
                 "order_created",
                 f"Створено заказ {result.get('order_id', '')} для {arguments.get('client_name', '—')}",
-                {"total": result.get("total", 0), "phone": arguments.get("client_phone", sender_phone)},
+                {"total": result.get("total", 0), "phone": arguments.get("client_phone", sender_phone),
+                 "channel": _ch, "account_id": _acc},
             )
         return json.dumps(result, ensure_ascii=False)
 
@@ -248,28 +286,142 @@ async def execute_tool(name: str, arguments: dict, sender_phone: str = "") -> st
     elif name == "notify_manager":
         reason = arguments.get("reason", "")
         summary = arguments.get("summary", "")
-        await _send_escalation(reason, summary, sender_phone)
+        await _send_escalation(reason, summary, sender_phone, conv=conv)
         await config.log_event("escalation", f"Передано менеджеру: {summary[:60]}",
-                               {"reason": reason, "phone": sender_phone})
+                               {"reason": reason, "phone": sender_phone,
+                                "channel": (conv or {}).get("channel", "telegram"),
+                                "account_id": (conv or {}).get("account_id")})
         return json.dumps({"result": "Менеджер уведомлён"}, ensure_ascii=False)
+
+    elif name == "send_file":
+        return await _handle_send_file(arguments, conv)
 
     return json.dumps({"error": f"Unknown tool: {name}"}, ensure_ascii=False)
 
 
-async def _send_escalation(reason: str, summary: str, sender_phone: str):
-    if not _tg_client:
-        logger.warning(f"[ESCALATION] No tg client. reason={reason}, summary={summary}")
-        return
-    # Fall back to the operator's own Saved Messages ("me") so a hand-off is NEVER
-    # lost when ESCALATION_CHAT_ID is not configured — otherwise the manager never
-    # learns about the lead and the conversation dead-ends.
-    peer = _escalation_peer or "me"
+# ── file sending (AI tool + dashboard operator) ──────────────────────────────
+async def _handle_send_file(arguments: dict, conv: dict | None) -> str:
+    if not conv or not conv.get("conv_id"):
+        return json.dumps({"ok": False, "error": "Нет контекста чата для отправки файла"},
+                          ensure_ascii=False)
+    from src.channels import registry
+    adapter = registry.get_by_conv(conv["conv_id"])
+    if adapter is None:
+        return json.dumps({"ok": False, "error": "Канал недоступен"}, ensure_ascii=False)
+    doc = await _resolve_doc(arguments.get("doc_id", ""), conv)
+    if doc is None:
+        return json.dumps({"ok": False, "error": "Документ не найден"}, ensure_ascii=False)
+    src = doc["src"]
+    size = len(src) if isinstance(src, (bytes, bytearray)) else (
+        os.path.getsize(src) if isinstance(src, str) and os.path.exists(src) else 0)
+    if size and size > adapter.max_file_bytes():
+        return json.dumps({"ok": False, "error": "Файл слишком большой для этого канала"},
+                          ensure_ascii=False)
+    res = await adapter.send_file(
+        conv["peer"], src, caption=arguments.get("caption", ""),
+        filename=doc["filename"], mimetype=doc["mimetype"],
+    )
+    if res.ok:
+        await config.log_event("file_sent", f"Відправлено файл: {doc['filename']}",
+                               {"channel": conv.get("channel"), "account_id": conv.get("account_id")})
+    return json.dumps({"ok": res.ok, "error": res.error}, ensure_ascii=False)
+
+
+def _find_doc_file(docs_dir: str, doc_id: str) -> str | None:
+    """Resolve a doc_id to a real file under docs/ — exact, with common extensions,
+    or case-insensitive stem match."""
+    if not doc_id or not os.path.isdir(docs_dir):
+        return None
+    exact = os.path.join(docs_dir, doc_id)
+    if os.path.isfile(exact):
+        return exact
+    for ext in (".pdf", ".txt", ".jpg", ".jpeg", ".png", ".xlsx", ".docx", ".csv"):
+        p = os.path.join(docs_dir, doc_id + ext)
+        if os.path.isfile(p):
+            return p
+    target = doc_id.lower()
+    try:
+        for fn in os.listdir(docs_dir):
+            stem = os.path.splitext(fn)[0].lower()
+            if stem == target or target in stem:
+                return os.path.join(docs_dir, fn)
+    except OSError:
+        pass
+    return None
+
+
+async def _generate_invoice(conv: dict) -> dict | None:
+    """Render a simple text invoice for the conversation's client from their last order."""
+    phone = (conv or {}).get("phone", "")
+    client = await bas.get_client(phone) if phone else None
+    if not client:
+        return None
+    orders = await bas.get_orders(client.get("id", ""))
+    if not orders:
+        return None
+    last = orders[0]
+    lines = [
+        "РАХУНОК-ФАКТУРА (попередній)",
+        f"Клієнт: {client.get('name', '—')}",
+        f"Телефон: {phone or '—'}",
+        f"Замовлення № {last.get('number', '—')} від {last.get('date', '—')}",
+        "",
+    ]
+    for it in last.get("items", []):
+        lines.append(f"  • {it.get('name', '?')} — {it.get('qty', '?')} шт")
+    lines += ["", f"Сума: {last.get('total', 0)} грн",
+              "", "Це попередній рахунок. Остаточний підтвердить менеджер."]
+    data = ("\n".join(lines)).encode("utf-8")
+    return {"src": data, "filename": f"invoice_{last.get('number', 'order')}.txt",
+            "mimetype": "text/plain"}
+
+
+async def _resolve_doc(doc_id: str, conv: dict | None) -> dict | None:
+    doc_id = (doc_id or "").strip()
+    if doc_id.lower() in ("invoice", "рахунок", "счет", "счёт"):
+        return await _generate_invoice(conv or {})
+    path = _find_doc_file(DOCS_DIR, doc_id)
+    if path:
+        mt, _ = mimetypes.guess_type(path)
+        return {"src": path, "filename": os.path.basename(path),
+                "mimetype": mt or "application/octet-stream"}
+    return None
+
+
+async def _send_escalation(reason: str, summary: str, sender_phone: str, conv: dict | None = None):
+    channel = (conv or {}).get("channel", "telegram")
+    account_id = (conv or {}).get("account_id")
     text = (
         f"🚨 Передано менеджеру\n"
+        f"Канал: {channel}" + (f" (акаунт #{account_id})" if account_id else "") + "\n"
         f"Причина: {reason}\n"
         f"Телефон: {sender_phone or '—'}\n"
         f"Суть: {summary}"
     )
+
+    # 1) Per-account escalation peer (credentials.escalation_peer) → send via that
+    #    account's own adapter, so each business can route hand-offs where it wants.
+    if account_id is not None:
+        try:
+            acct = await account_manager.get_account(account_id, include_secrets=True)
+            esc_peer = (acct or {}).get("credentials", {}).get("escalation_peer") if acct else None
+            if esc_peer:
+                from src.channels import registry
+                adapter = registry.get(channel, account_id)
+                if adapter is not None:
+                    res = await adapter.send_text(str(esc_peer), text)
+                    if res.ok:
+                        logger.info(f"[ESCALATION] sent via {channel}:{account_id} -> {esc_peer}")
+                        return
+        except Exception as e:
+            logger.error(f"[ESCALATION] per-account route failed: {e}")
+
+    # 2) Fallback: the default Telegram manager chat (ESCALATION_CHAT_ID) or, if unset,
+    #    the operator's own Saved Messages ("me") — a hand-off is NEVER lost.
+    if not _tg_client:
+        logger.warning(f"[ESCALATION] No tg client. reason={reason}, summary={summary}")
+        return
+    peer = _escalation_peer or "me"
     try:
         await _tg_client.send_message(peer, text)
         logger.info(f"[ESCALATION] Sent to {peer}")

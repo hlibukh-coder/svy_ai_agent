@@ -275,6 +275,16 @@ def _category_patterns(query: str) -> list[str]:
     return []
 
 
+def _normalize_code(s: str) -> str:
+    """Fold an article/code so 'din 933', 'DIN-933', 'DIN.933' all match: upper, no
+    spaces/dashes/dots. The SAME transform is applied to the `code` column in SQL."""
+    return (s or "").upper().replace(" ", "").replace("-", "").replace(".", "")
+
+
+# SQL mirror of _normalize_code applied to the products.code column.
+_CODE_NORM_SQL = "upper(replace(replace(replace(code, ' ', ''), '-', ''), '.', ''))"
+
+
 async def get_products(query: str) -> list:
     if USE_MOCK:
         q = query.lower()
@@ -296,7 +306,9 @@ async def get_products(query: str) -> list:
             # rank by how many descriptive words also hit.
             required, optional = _tokenize_query(query)
 
-            params: list = [f"%{query}%"]  # $1 = raw phrase (code match)
+            params: list = [f"%{query}%"]  # $1 = raw phrase (code substring match)
+            code_norm = _normalize_code(query)
+            params.append(code_norm or "\x00")  # $2 = normalized exact-code match (sentinel if empty)
             req_conds = []
             for t in required:
                 params.append(f"%{t}%")
@@ -325,9 +337,10 @@ async def get_products(query: str) -> list:
                 SELECT ref_key, name, code, price, stock, ({score_sql}) AS score
                 FROM products
                 WHERE deleted = false
-                  AND ( code ILIKE $1 OR ({req_clause}) )
+                  AND ( {_CODE_NORM_SQL} = $2 OR code ILIKE $1 OR ({req_clause}) )
                 ORDER BY
-                  CASE WHEN code ILIKE $1 THEN 0 ELSE 1 END,
+                  CASE WHEN {_CODE_NORM_SQL} = $2 THEN 0
+                       WHEN code ILIKE $1 THEN 1 ELSE 2 END,
                   {cat_boost},
                   (stock > 0) DESC,
                   score DESC,
@@ -341,6 +354,7 @@ async def get_products(query: str) -> list:
                 return [
                     {
                         "article": r["code"],
+                        "code": r["code"],
                         "name": r["name"],
                         "price": float(r["price"] or 0),
                         "stock": float(r["stock"] or 0),
@@ -627,6 +641,8 @@ async def create_order(
     city: str,
     items: list,
     comment: str = "",
+    channel: str = "telegram",
+    account_id: int | None = None,
 ) -> dict:
     import uuid
     from datetime import date
@@ -653,15 +669,26 @@ async def create_order(
     if pool:
         try:
             async with pool.acquire() as conn:
-                await conn.execute(
-                    """
-                    INSERT INTO orders (ref_key, number, date, client_ref_key, amount)
-                    VALUES ($1, $2, $3, $4, $5)
-                    ON CONFLICT (ref_key) DO NOTHING
-                    """,
-                    local_id, local_number, date.today(), client_id, total,
-                )
-            logger.info(f"[ORDER] Saved locally {local_number} total={total}")
+                try:
+                    await conn.execute(
+                        """
+                        INSERT INTO orders (ref_key, number, date, client_ref_key, amount, channel, account_id)
+                        VALUES ($1, $2, $3, $4, $5, $6, $7)
+                        ON CONFLICT (ref_key) DO NOTHING
+                        """,
+                        local_id, local_number, date.today(), client_id, total, channel, account_id,
+                    )
+                except Exception:
+                    # Columns channel/account_id may not exist on an un-migrated DB.
+                    await conn.execute(
+                        """
+                        INSERT INTO orders (ref_key, number, date, client_ref_key, amount)
+                        VALUES ($1, $2, $3, $4, $5)
+                        ON CONFLICT (ref_key) DO NOTHING
+                        """,
+                        local_id, local_number, date.today(), client_id, total,
+                    )
+            logger.info(f"[ORDER] Saved locally {local_number} total={total} channel={channel}")
         except Exception as e:
             logger.error(f"[ORDER] PG save error: {e}")
 
