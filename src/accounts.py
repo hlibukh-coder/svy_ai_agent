@@ -27,7 +27,7 @@ DB_PATH = os.getenv("DB_PATH", "data/history.db")
 LEGACY_TG_ACCOUNT_ID = 1
 LEGACY_TG_SESSION = "session/svy_agent"
 
-VALID_CHANNELS = ("telegram", "whatsapp", "email", "viber")
+VALID_CHANNELS = ("telegram", "whatsapp", "email", "viber", "elevenlabs")
 VALID_STATUS = ("disconnected", "connecting", "authorized", "error")
 
 # Per-channel `credentials` JSON shape (documentation, validated loosely):
@@ -36,6 +36,7 @@ VALID_STATUS = ("disconnected", "connecting", "authorized", "error")
 #   email    : {"imap_host","imap_port","smtp_host","smtp_port","user","password",
 #               "use_ssl","from_name"?}
 #   viber    : {"bot_token","sender_name"?,"sender_avatar"?}
+#   elevenlabs : {"api_key"?,"agent_id"?,"webhook_secret"}  (post-call webhook ingest)
 
 
 # ── encryption at rest ────────────────────────────────────────────────────────

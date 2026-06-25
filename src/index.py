@@ -366,6 +366,58 @@ async def operator_send_file(chat_id: str, file, caption: str = "", filename: st
     return {"ok": True}
 
 
+async def ai_reply_now(chat_id: str) -> dict:
+    """On-demand AI reply: compose and send ONE reply to this conversation right now,
+    even when auto-reply is off or the chat is on human-takeover. This is the
+    "AI, відповісти" action — the AI answers only when the operator tells it to."""
+    conv_id = context.as_conv_id(chat_id)
+    channel, account_id, peer = context.parse_conv_id(conv_id)
+    from src.channels import registry
+    adapter = registry.get(channel, account_id)
+    if adapter is None:
+        return {"ok": False, "error": f"{channel} не підключено"}
+
+    linked = await context.get_linked_client(conv_id=conv_id)
+    phone = (linked or {}).get("phone") or ""
+    client_data = None
+    if linked and linked.get("client_ref_key"):
+        client_data = (await bas.get_client(phone)) if phone else None
+        if not client_data:
+            client_data = {"id": linked["client_ref_key"], "name": linked.get("name", ""),
+                           "phone": phone, "company": "", "city": ""}
+    elif phone:
+        client_data = await bas.get_client(phone)
+
+    orders = await bas.get_orders(client_data["id"]) if client_data else []
+    cfg_prompt = await config.get_value("system_prompt", "")
+    system_prompt = build_system_prompt(client_data, orders, base_prompt=cfg_prompt or None)
+    history = await context.load_history(conv_id=conv_id, limit=20)
+    if not history:
+        return {"ok": False, "error": "Немає повідомлень для відповіді"}
+
+    messages = [{"role": "system", "content": system_prompt}, *history]
+    last_user = next((m["content"] for m in reversed(history) if m["role"] == "user"), "")
+    conv = {"conv_id": conv_id, "channel": channel, "account_id": account_id,
+            "peer": peer, "phone": phone}
+    try:
+        reply, called = await run_openai(messages, phone, conv=conv)
+    except Exception as e:
+        logger.error(f"[AI-REPLY] OpenAI error for {conv_id}: {e}")
+        return {"ok": False, "error": str(e)}
+
+    await _ensure_handoff(reply, called, last_user, phone, conv=conv)
+    if not (reply or "").strip():
+        reply = "Хвилинку, уточню і повернусь до вас."
+    await context.save_message(conv_id=conv_id, role="assistant", content=reply)
+    try:
+        await adapter.send_reply(peer, reply)
+    except Exception as e:
+        logger.error(f"[AI-REPLY] send to {conv_id} failed: {e}")
+        return {"ok": False, "error": str(e)}
+    logger.info(f"[AI-REPLY] operator-triggered reply sent to {conv_id}: {reply[:80]}")
+    return {"ok": True, "reply": reply}
+
+
 async def activate_client(tg_client, start_scheduler: bool = True):
     """Back-compat: wrap an already-authorized Telethon client in the legacy
     TelegramAdapter (account id=1) and register it."""

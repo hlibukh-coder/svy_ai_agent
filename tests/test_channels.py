@@ -124,13 +124,19 @@ async def test_viber_sleeps_without_token():
 # ── router (channel-agnostic core) ────────────────────────────────────────────
 
 async def test_router_dispatch(tmpdb, monkeypatch):
-    from src import index
+    from src import index, config
 
     async def fake_run_openai(messages, phone, conv=None):
         assert conv and conv["channel"] == "whatsapp"
         return "Вітаю! Чим допомогти?", set()
 
     monkeypatch.setattr(index, "run_openai", fake_run_openai)
+
+    # auto-reply defaults to manual; this test exercises the reply mechanic, so turn it on.
+    _orig_get_value = config.get_value
+    async def fake_get_value(key, default=None):
+        return True if key == "auto_reply" else await _orig_get_value(key, default)
+    monkeypatch.setattr(config, "get_value", fake_get_value)
 
     sent = []
 
@@ -146,6 +152,32 @@ async def test_router_dispatch(tmpdb, monkeypatch):
     assert sent == [("380@c.us", "Вітаю! Чим допомогти?")]
     hist = await context.load_history(conv_id="whatsapp:2:380@c.us")
     assert [m["role"] for m in hist] == ["user", "assistant"]
+
+
+async def test_router_manual_mode_silent(tmpdb, monkeypatch):
+    """auto_reply off (the default) → the AI records the inbound but stays silent;
+    it answers only when the operator triggers it on demand."""
+    from src import index
+
+    async def fake_run_openai(messages, phone, conv=None):
+        raise AssertionError("AI must not run in manual mode")
+
+    monkeypatch.setattr(index, "run_openai", fake_run_openai)
+
+    sent = []
+
+    class FakeAdapter:
+        channel = "whatsapp"
+        account_id = 2
+        async def send_reply(self, peer, reply):
+            sent.append((peer, reply))
+
+    msg = InboundMessage(channel="whatsapp", account_id=2, peer="380@c.us", text="привіт")
+    await router.route_inbound(msg, FakeAdapter())
+
+    assert sent == []
+    hist = await context.load_history(conv_id="whatsapp:2:380@c.us")
+    assert [m["role"] for m in hist] == ["user"]
 
 
 async def test_router_respects_human_takeover(tmpdb, monkeypatch):

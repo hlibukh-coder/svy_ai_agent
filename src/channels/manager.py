@@ -25,6 +25,9 @@ def _adapter_class(channel: str):
     if channel == "viber":
         from src.channels.viber_adapter import ViberAdapter
         return ViberAdapter
+    if channel == "elevenlabs":
+        from src.channels.elevenlabs_adapter import ElevenLabsAdapter
+        return ElevenLabsAdapter
     return None
 
 

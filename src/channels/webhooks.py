@@ -53,3 +53,19 @@ async def viber_webhook(account_id: int, request: Request):
     except Exception as e:
         logger.error(f"[WEBHOOK] viber/{account_id} error: {e}")
     return {"ok": True}
+
+
+@router.post("/webhooks/elevenlabs/{account_id}")
+async def elevenlabs_webhook(account_id: int, request: Request):
+    # ElevenLabs post-call webhook (transcript + summary + call metadata). Auth via the
+    # per-account ?token=<webhook_secret> appended to the configured webhook URL.
+    adapter = _verify("elevenlabs", account_id, request)
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    try:
+        await adapter.handle_webhook(payload)
+    except Exception as e:
+        logger.error(f"[WEBHOOK] elevenlabs/{account_id} error: {e}")
+    return {"ok": True}

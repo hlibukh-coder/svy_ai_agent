@@ -13,6 +13,8 @@ logger = logging.getLogger(__name__)
 # Defaults used when a key is missing / no DB. Editable from the Settings UI.
 DEFAULTS: dict = {
     "agent_enabled": True,        # master switch: off → bot stops replying + no outbound
+    "auto_reply": False,          # off → AI stays silent on inbound; replies ONLY when the
+                                  #       operator triggers it ("AI, відповісти") per chat
     "system_prompt": "",          # "" → use code SYSTEM_PROMPT_BASE
     "send_hour": 10,              # hour of day proactive jobs run
     "reorder_enabled": True,

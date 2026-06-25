@@ -84,7 +84,12 @@
   .msgs{flex:1;overflow-y:auto;padding:18px;display:flex;flex-direction:column;gap:9px}
   .m{max-width:74%;padding:9px 13px;border-radius:14px;font-size:13.5px;line-height:1.45}
   .m.user{align-self:flex-end;background:#dcf8c6}.m.assistant{align-self:flex-start;background:#f1f3f7}
+  .m.system{align-self:center;max-width:90%;background:#eaf6f4;color:#0f766e;font-size:12px;text-align:center;border:1px solid #cdeae6}
   .muted{color:#9aa3b2;text-align:center;padding:30px;font-size:13px}
+  .chbadge{display:inline-flex;align-items:center;gap:5px;font-size:11px;color:#6b7280;background:#f1f3f7;border-radius:10px;padding:1px 8px;font-weight:500}
+  .chbadge i{width:8px;height:8px;border-radius:50%;flex-shrink:0}
+  .acctfilter{padding:8px 10px;border-bottom:1px solid #eef0f4;position:sticky;top:0;background:#fff;z-index:1}
+  .acctfilter select{width:100%;border:1px solid #d8dce4;border-radius:7px;padding:7px 9px;font-size:12.5px;background:#fff}
 </style>
 </head>
 <body>
@@ -168,32 +173,18 @@
 
   <section class="tab" id="tab-settings">
     <div class="panel">
-      <h3>Підключення Telegram</h3>
-      <div id="tgBox" style="display:flex;align-items:flex-start;gap:24px">
-        <div style="flex:1">
-          <div id="tgStatus" style="font-size:14px;margin-bottom:10px">Перевірка…</div>
-          <button class="btn" id="tgBtn" onclick="tgStart()">Підключити через QR</button>
-          <div id="tgHint" style="font-size:12px;color:#8a93a3;margin-top:10px;max-width:380px"></div>
-          <div id="tgPwd" style="display:none;margin-top:12px">
-            <input type="password" id="tgPwdInput" placeholder="Пароль 2FA" style="border:1px solid #d8dce4;border-radius:7px;padding:8px 10px;font-size:13px;width:200px">
-            <button class="btn" onclick="tgPassword()">Підтвердити</button>
-          </div>
-        </div>
-        <div id="tgQr" style="width:200px;height:200px;flex-shrink:0"></div>
-      </div>
-    </div>
-
-    <div class="panel">
-      <h3>Акаунти / Канали</h3>
-      <p style="font-size:12px;color:#8a93a3;margin-bottom:12px">Підключайте декілька акаунтів кожного каналу (Telegram, WhatsApp через WAHA, Email, Viber). Вхідні та вихідні повідомлення йдуть через відповідний акаунт; аналітика рахує, що і з якого каналу.</p>
+      <h3>Підключення акаунтів</h3>
+      <p style="font-size:12px;color:#8a93a3;margin-bottom:12px">Підключайте <b>декілька акаунтів</b> кожного каналу (Telegram, WhatsApp через WAHA, Email, Viber). Кожен акаунт авторизується окремо (Telegram — через свій QR). Вхідні й вихідні повідомлення йдуть через відповідний акаунт, а в «Діалогах» видно, з якого акаунта прийшов чат.</p>
       <div id="accountsBox" style="font-size:13px">Завантаження…</div>
       <div style="margin-top:16px;border-top:1px solid #eee;padding-top:14px">
         <h4 style="margin:0 0 8px">Додати акаунт</h4>
         <select id="newAccCh" onchange="renderAddForm()" style="border:1px solid #d8dce4;border-radius:6px;padding:7px 9px;font-size:13px">
           <option value="telegram">Telegram</option>
           <option value="whatsapp">WhatsApp (WAHA)</option>
-          <option value="email">Email (IMAP/SMTP)</option>
+          <option value="gmail">Gmail</option>
+          <option value="email">Email (інша пошта, IMAP/SMTP)</option>
           <option value="viber">Viber</option>
+          <option value="elevenlabs">Дзвінки (ElevenLabs)</option>
         </select>
         <div id="addForm" style="margin-top:10px"></div>
       </div>
@@ -212,6 +203,11 @@
       <h3>Промпт агента</h3>
       <label>Системний промпт (порожньо = вбудований за замовчуванням)</label>
       <textarea id="prompt" placeholder="Системний промпт..."></textarea>
+
+      <h3 style="margin-top:22px">Режим відповідей AI</h3>
+      <div class="grid-set">
+        <div class="fld"><div class="n">Відповідати автоматично<small>вимк. → AI мовчить, поки ви не натиснете «Відповісти AI» в чаті</small></div><label class="sw"><input type="checkbox" id="auto_reply"><span class="sl"></span></label></div>
+      </div>
 
       <h3 style="margin-top:22px">Інтервали та пороги розсилок</h3>
       <div class="grid-set">
@@ -235,9 +231,18 @@
 </main>
 
 <script>
-const CH_COLORS={Telegram:'#2d9be0',WhatsApp:'#3fbf63',Viber:'#7c4dde',Email:'#f5a623','Телефон':'#f5a623'};
-const CH_LABEL={telegram:'Telegram',whatsapp:'WhatsApp',email:'Email',viber:'Viber'};
+const CH_COLORS={Telegram:'#2d9be0',WhatsApp:'#3fbf63',Viber:'#7c4dde',Email:'#f5a623','Дзвінки':'#12a594','Телефон':'#f5a623'};
+const CH_LABEL={telegram:'Telegram',whatsapp:'WhatsApp',email:'Email',viber:'Viber',elevenlabs:'Дзвінки'};
 const ST_LABEL={authorized:'✅ підключено',connecting:'🟡 підключення',disconnected:'⚪ не підключено',error:'🔴 помилка'};
+// Badge "канал · акаунт" — показує, з якого акаунта прийшов чат/повідомлення.
+function chBadge(channel,accountLabel){
+  const key=(channel||'telegram').toLowerCase();
+  const name=CH_LABEL[key]||channel||'';
+  const col=CH_COLORS[name]||'#999';
+  const acc=accountLabel?' · '+esc(accountLabel):'';
+  return `<span class="chbadge" title="Канал / акаунт"><i style="background:${col}"></i>${esc(name)}${acc}</span>`;
+}
+function acctKey(c){return (c.channel||'telegram')+':'+(c.account_id==null?'':c.account_id);}
 function switchTab(t){
   document.querySelectorAll('.tab-btn').forEach(b=>b.classList.toggle('active',b.dataset.tab===t));
   document.querySelectorAll('.tab').forEach(s=>s.classList.toggle('active',s.id==='tab-'+t));
@@ -322,6 +327,7 @@ async function loadConfig(){
     document.getElementById('prompt').value=c.system_prompt||'';
     CFG_FIELDS.forEach(f=>document.getElementById(f).value=c[f]);
     CFG_BOOLS.forEach(f=>document.getElementById(f).checked=!!c[f]);
+    document.getElementById('auto_reply').checked=c.auto_reply!==false;
   }catch(e){}
   tgRefreshStatus();
   renderAddForm();
@@ -342,10 +348,12 @@ async function loadAccounts(){
         const st=ST_LABEL[a.status]||esc(a.status);const m=a.meta||{};
         const sub=esc(m.phone||m.name||m.last_error||'');
         const del=a.id===1?'':`<button onclick="acctDelete(${a.id})" style="background:none;border:none;color:#e0524d;cursor:pointer;font-size:12px">видалити</button>`;
+        const isOn=a.status==='authorized';
         const conn=(ch==='telegram'||ch==='whatsapp')
-          ?`<button onclick="acctQrStart(${a.id},'${ch}')" style="background:none;border:none;color:#2d9be0;cursor:pointer;font-size:12px">QR</button>`
-          :`<button onclick="acctConnect(${a.id})" style="background:none;border:none;color:#2d9be0;cursor:pointer;font-size:12px">підключити</button>`;
-        return `<div style="display:flex;align-items:center;gap:10px;padding:5px 0"><span style="font-weight:600">${esc(a.label)}</span><span style="color:#8a93a3;font-size:12px">${st} ${sub}</span><label class="sw" style="transform:scale(.8)"><input type="checkbox" ${a.enabled?'checked':''} onchange="acctToggle(${a.id},this.checked)"><span class="sl"></span></label>${conn} ${del}</div>`;
+          ?`<button onclick="acctQrStart(${a.id},'${ch}')" style="background:none;border:none;color:#2d9be0;cursor:pointer;font-size:12px;font-weight:600">${isOn?'перепідключити QR':'підключити через QR'}</button>`
+          :`<button onclick="acctConnect(${a.id})" style="background:none;border:none;color:#2d9be0;cursor:pointer;font-size:12px;font-weight:600">${isOn?'перевірити':'підключити'}</button>`;
+        const hook=(ch==='elevenlabs'||ch==='whatsapp'||ch==='viber')?`<button onclick="showWebhookUrl(${a.id})" style="background:none;border:none;color:#12a594;cursor:pointer;font-size:12px;font-weight:600">webhook URL</button>`:'';
+        return `<div style="display:flex;align-items:center;gap:10px;padding:6px 0;flex-wrap:wrap;border-bottom:1px solid #f7f8fa"><span style="font-weight:600">${esc(a.label)}</span><span style="color:#8a93a3;font-size:12px">${st} ${sub}</span><label class="sw" style="transform:scale(.8)"><input type="checkbox" ${a.enabled?'checked':''} onchange="acctToggle(${a.id},this.checked)"><span class="sl"></span></label>${conn} ${hook} ${del}</div>`;
       }).join('');
       return `<div style="margin-bottom:12px"><div style="display:flex;align-items:center;gap:6px;font-weight:700;margin-bottom:2px"><i style="width:10px;height:10px;border-radius:50%;background:${col};display:inline-block"></i>${CH_LABEL[ch]||ch}</div>${rows}</div>`;
     }).join('');
@@ -353,9 +361,11 @@ async function loadAccounts(){
 }
 const ACC_FORMS={
   telegram:`<input class="afi" id="af_label" placeholder="Назва (напр. Telegram #2)">`,
-  whatsapp:`<input class="afi" id="af_label" placeholder="Назва"><input class="afi" id="af_base_url" placeholder="WAHA base_url (http://localhost:3000)"><input class="afi" id="af_api_key" placeholder="API key (необов'язково)"><input class="afi" id="af_session_name" placeholder="session (default)">`,
-  email:`<input class="afi" id="af_label" placeholder="Назва"><input class="afi" id="af_imap_host" placeholder="IMAP host"><input class="afi" id="af_imap_port" placeholder="IMAP port (993)"><input class="afi" id="af_smtp_host" placeholder="SMTP host"><input class="afi" id="af_smtp_port" placeholder="SMTP port (465)"><input class="afi" id="af_user" placeholder="E-mail / логін"><input class="afi" id="af_password" type="password" placeholder="Пароль">`,
-  viber:`<input class="afi" id="af_label" placeholder="Назва"><input class="afi" id="af_bot_token" placeholder="Viber bot token">`
+  whatsapp:`<input class="afi" id="af_label" placeholder="Назва (напр. WhatsApp — продажі)"><input class="afi" id="af_base_url" placeholder="WAHA base_url (http://localhost:3000)"><input class="afi" id="af_api_key" placeholder="API key (необов'язково)"><input class="afi" id="af_session_name" placeholder="session (default)"><div style="font-size:12px;color:#8a93a3;margin-top:4px;max-width:360px">Потрібен запущений WAHA-сервер (<a href="https://waha.devlike.pro" target="_blank" style="color:#2d9be0">waha.devlike.pro</a>). Після «Додати» натисніть «підключити через QR» і скануйте у WhatsApp → Пов'язані пристрої.</div>`,
+  gmail:`<input class="afi" id="af_label" placeholder="Назва (напр. Gmail — відділ продажів)"><input class="afi" id="af_user" placeholder="Gmail адреса (you@gmail.com)"><input class="afi" id="af_password" type="password" placeholder="App Password (16 символів, без пробілів)"><div style="font-size:12px;color:#8a93a3;margin-top:4px;max-width:360px">Gmail вимагає <b>пароль застосунку</b> (App Password), не звичайний пароль: увімкніть 2FA → <a href="https://myaccount.google.com/apppasswords" target="_blank" style="color:#2d9be0">myaccount.google.com/apppasswords</a> → створіть пароль для «Пошта». Хости imap/smtp.gmail.com підставляться автоматично. AI відповідатиме на листи з цієї скриньки.</div>`,
+  email:`<input class="afi" id="af_label" placeholder="Назва"><input class="afi" id="af_imap_host" placeholder="IMAP host"><input class="afi" id="af_imap_port" placeholder="IMAP port (993)"><input class="afi" id="af_smtp_host" placeholder="SMTP host"><input class="afi" id="af_smtp_port" placeholder="SMTP port (465)"><input class="afi" id="af_user" placeholder="E-mail / логін"><input class="afi" id="af_password" type="password" placeholder="Пароль / App Password">`,
+  viber:`<input class="afi" id="af_label" placeholder="Назва"><input class="afi" id="af_bot_token" placeholder="Viber bot token">`,
+  elevenlabs:`<input class="afi" id="af_label" placeholder="Назва (напр. Дзвінки — гаряча лінія)"><input class="afi" id="af_api_key" placeholder="ElevenLabs API key (необов'язково)"><input class="afi" id="af_agent_id" placeholder="Agent ID (необов'язково)"><div style="font-size:12px;color:#8a93a3;margin-top:4px;max-width:340px">Після додавання натисніть «webhook URL» і вставте його в ElevenLabs → Conversational AI → Post-call webhook. Уся інфа по дзвінках піде в «Діалоги».</div>`
 };
 function renderAddForm(){
   const sel=document.getElementById('newAccCh');if(!sel)return;
@@ -366,11 +376,14 @@ function renderAddForm(){
 }
 function _v(id){const e=document.getElementById(id);return e?e.value.trim():''}
 async function addAccount(){
-  const ch=document.getElementById('newAccCh').value;
-  const label=_v('af_label')||(CH_LABEL[ch]||ch);let creds={};
-  if(ch==='whatsapp')creds={base_url:_v('af_base_url'),api_key:_v('af_api_key'),session_name:_v('af_session_name')||'default'};
+  const sel=document.getElementById('newAccCh').value;
+  let ch=sel;
+  const label=_v('af_label')||(sel==='gmail'?'Gmail':(CH_LABEL[ch]||ch));let creds={};
+  if(sel==='gmail'){ch='email';creds={imap_host:'imap.gmail.com',imap_port:993,smtp_host:'smtp.gmail.com',smtp_port:465,user:_v('af_user'),password:(_v('af_password')||'').replace(/\s+/g,''),use_ssl:true,from_name:'СВЮ.КЛУБ'};}
+  else if(ch==='whatsapp')creds={base_url:_v('af_base_url'),api_key:_v('af_api_key'),session_name:_v('af_session_name')||'default'};
   else if(ch==='email')creds={imap_host:_v('af_imap_host'),imap_port:Number(_v('af_imap_port')||993),smtp_host:_v('af_smtp_host'),smtp_port:Number(_v('af_smtp_port')||465),user:_v('af_user'),password:_v('af_password'),use_ssl:true};
   else if(ch==='viber')creds={bot_token:_v('af_bot_token')};
+  else if(ch==='elevenlabs')creds={api_key:_v('af_api_key'),agent_id:_v('af_agent_id')};
   try{await j('/api/accounts',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({channel:ch,label,credentials:creds})});
     renderAddForm();loadAccounts();
   }catch(e){alert('Помилка: '+e)}
@@ -378,6 +391,13 @@ async function addAccount(){
 async function acctToggle(id,on){try{await j('/api/accounts/'+id,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled:on})});if(on){try{await j('/api/accounts/'+id+'/connect',{method:'POST'})}catch(e){}}loadAccounts();}catch(e){alert('Помилка: '+e)}}
 async function acctDelete(id){if(!confirm('Видалити акаунт?'))return;try{await j('/api/accounts/'+id,{method:'DELETE'});loadAccounts();}catch(e){alert('Помилка: '+e)}}
 async function acctConnect(id){try{const r=await j('/api/accounts/'+id+'/connect',{method:'POST'});alert('Статус: '+(r.status||'')+(r.health&&r.health.error?' — '+r.health.error:''));loadAccounts();}catch(e){alert('Помилка: '+e)}}
+async function showWebhookUrl(id){
+  try{const r=await j('/api/accounts/'+id+'/webhook');
+    if(!r.url){alert(r.note||'Цей канал не використовує вебхук');return;}
+    try{await navigator.clipboard.writeText(r.url);}catch(e){}
+    prompt('Webhook URL (скопійовано) — вставте у провайдера (ElevenLabs → Post-call webhook):',r.url);
+  }catch(e){alert('Помилка: '+e)}
+}
 async function acctQrStart(id,ch){
   acctQrId=id;acctQrCh=ch;acctQrPolling=false;
   const wrap=document.getElementById('acctQrWrap'),qr=document.getElementById('acctQr'),st=document.getElementById('acctQrStatus');
@@ -408,55 +428,19 @@ async function acctPassword(){
   }catch(e){}
 }
 
-// ── Telegram QR login ──
-let tgPolling=false;
+// ── Header connection indicator (green if ANY account is authorized) ──
 function setConn(on){const d=document.getElementById('conn'),t=document.getElementById('connTxt');
-  d.className='dot'+(on?'':' off');t.textContent=on?'AI Online':'Telegram не підключено';}
+  d.className='dot'+(on?'':' off');t.textContent=on?'AI Online':'Месенджери не підключено';}
 async function tgRefreshStatus(){
-  try{const s=await j('/api/telegram/status');
-    const el=document.getElementById('tgStatus'),btn=document.getElementById('tgBtn');
-    if(s.status==='authorized'){
-      el.innerHTML=`✅ Підключено: <b>${esc(s.name||'')}</b> ${esc(s.phone||'')}`;
-      btn.style.display='none';document.getElementById('tgQr').innerHTML='';
-      document.getElementById('tgHint').textContent='';setConn(true);
-    }else{
-      el.innerHTML='⚪ Не підключено';btn.style.display='';setConn(false);
-    }
+  try{const accs=await j('/api/accounts');
+    setConn(accs.some(a=>a.status==='authorized'));
   }catch(e){}
-}
-async function tgStart(){
-  // Stop any previous poll loop and clear the QR before generating a new one
-  tgPolling=false;
-  const qr=document.getElementById('tgQr'),hint=document.getElementById('tgHint');
-  qr.innerHTML='';
-  hint.textContent='Відкрийте Telegram на телефоні → Налаштування → Пристрої → Підключити пристрій → скануйте QR.';
-  try{const r=await j('/api/telegram/qr/start',{method:'POST'});
-    if(r.status==='authorized'){tgRefreshStatus();return;}
-    if(r.svg)qr.innerHTML=r.svg;
-    tgPolling=true;tgPoll();
-  }catch(e){hint.textContent='Помилка: '+e;}
-}
-async function tgPoll(){
-  if(!tgPolling)return;
-  try{const r=await j('/api/telegram/qr/poll');
-    if(r.status==='authorized'){tgPolling=false;document.getElementById('tgQr').innerHTML='';document.getElementById('tgPwd').style.display='none';tgRefreshStatus();return;}
-    if(r.status==='password'){document.getElementById('tgPwd').style.display='';document.getElementById('tgHint').textContent='Увімкнено 2FA — введіть пароль.';}
-    if(r.svg)document.getElementById('tgQr').innerHTML=r.svg;
-    if(r.status==='disconnected'){tgPolling=false;return;}
-  }catch(e){}
-  setTimeout(tgPoll,2500);
-}
-async function tgPassword(){
-  const p=document.getElementById('tgPwdInput').value;
-  try{const r=await j('/api/telegram/qr/password',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:p})});
-    if(r.status==='authorized'){tgPolling=false;document.getElementById('tgPwd').style.display='none';tgRefreshStatus();}
-    else document.getElementById('tgHint').textContent='Невірний пароль, спробуйте ще раз.';
-  }catch(e){document.getElementById('tgHint').textContent='Помилка: '+e;}
 }
 async function saveConfig(){
   const body={system_prompt:document.getElementById('prompt').value};
   CFG_FIELDS.forEach(f=>body[f]=Number(document.getElementById(f).value));
   CFG_BOOLS.forEach(f=>body[f]=document.getElementById(f).checked);
+  body.auto_reply=document.getElementById('auto_reply').checked;
   const m=document.getElementById('savedMsg');
   try{const r=await j('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
     // Reflect what actually persisted, so the user sees it stuck
@@ -469,21 +453,37 @@ async function saveConfig(){
   }catch(e){m.textContent='✗ Помилка: '+e;m.style.color='#e0524d';}
 }
 
-let chats=[],cur=null;
+let chats=[],cur=null,chatAcctFilter='';
 async function loadChats(){
-  try{chats=await j('/api/chats');
-    document.getElementById('chatList').innerHTML=chats.length?chats.map(c=>{
-      const nm=c.name||c.phone||('ID '+c.chat_id);
-      return `<div class="ci ${c.chat_id===cur?'active':''}" onclick="openChat('${c.chat_id}')"><div class="av">${esc((nm[0]||'?')).toUpperCase()}</div><div><div class="nm">${esc(nm)}</div><div class="pv">${esc((c.last_msg||'').substring(0,40))}</div></div></div>`;
-    }).join(''):'<div class="muted">Діалогів немає</div>';
+  try{chats=await j('/api/chats');renderChatList();
   }catch(e){document.getElementById('chatList').innerHTML='<div class="muted">Помилка</div>'}
+}
+function renderChatList(){
+  const el=document.getElementById('chatList');if(!el)return;
+  // Які акаунти присутні серед чатів → показуємо фільтр лише коли їх >1.
+  const accs=[],seen=new Set();
+  chats.forEach(c=>{const k=acctKey(c);if(!seen.has(k)){seen.add(k);accs.push({key:k,channel:c.channel||'telegram',label:c.account_label,account_id:c.account_id});}});
+  let filter='';
+  if(accs.length>1){
+    filter=`<div class="acctfilter"><select onchange="chatAcctFilter=this.value;renderChatList()">`+
+      `<option value="">Усі акаунти (${chats.length})</option>`+
+      accs.map(a=>{const n=chats.filter(c=>acctKey(c)===a.key).length;const nm=(CH_LABEL[a.channel]||a.channel)+(a.label?' · '+a.label:(' #'+a.account_id));return `<option value="${a.key}" ${chatAcctFilter===a.key?'selected':''}>${esc(nm)} (${n})</option>`;}).join('')+
+      `</select></div>`;
+  }else if(chatAcctFilter){chatAcctFilter='';}
+  const list=chats.filter(c=>!chatAcctFilter||acctKey(c)===chatAcctFilter);
+  const body=list.length?list.map(c=>{
+    const nm=c.name||c.phone||('ID '+c.chat_id);
+    return `<div class="ci ${c.chat_id===cur?'active':''}" onclick="openChat('${c.chat_id}')"><div class="av">${esc((nm[0]||'?')).toUpperCase()}</div><div style="flex:1;min-width:0"><div class="nm">${esc(nm)}</div><div class="pv">${esc((c.last_msg||'').substring(0,40))}</div><div style="margin-top:4px">${chBadge(c.channel,c.account_label)}</div></div></div>`;
+  }).join(''):'<div class="muted">Діалогів немає</div>';
+  el.innerHTML=filter+body;
 }
 async function openChat(id){
   cur=id;loadChats();
   try{const d=await j('/api/chat/'+id);const cl=d.client||{};
     const aiOn=!d.ai_paused;
-    const toggle=`<button onclick="toggleChatAI('${id}',${aiOn})" title="Хто відповідає в цьому чаті" style="margin-left:auto;border:1px solid ${aiOn?'#2e9e57':'#e0524d'};color:${aiOn?'#2e9e57':'#e0524d'};background:#fff;border-radius:7px;padding:5px 10px;font-size:12px;font-weight:600;cursor:pointer">${aiOn?'🤖 AI відповідає':'🙋 Я відповідаю'}</button>`;
-    const head=`<div style="display:flex;align-items:center;gap:8px;padding:14px 18px;border-bottom:1px solid #eef0f4"><b>${esc(cl.name||cl.phone||'Чат')}</b> <span style="color:#9aa3b2;font-size:12px">${esc(cl.phone||'')} ${esc(cl.company||'')}</span>${toggle}</div>`;
+    const replyBtn=`<button onclick="aiReplyNow('${id}',this)" title="AI складе та надішле відповідь зараз" style="margin-left:auto;border:1px solid #2d6fe0;color:#2d6fe0;background:#fff;border-radius:7px;padding:5px 10px;font-size:12px;font-weight:600;cursor:pointer">🤖 Відповісти AI</button>`;
+    const toggle=`<button onclick="toggleChatAI('${id}',${aiOn})" title="Хто відповідає в цьому чаті за замовчуванням" style="border:1px solid ${aiOn?'#2e9e57':'#e0524d'};color:${aiOn?'#2e9e57':'#e0524d'};background:#fff;border-radius:7px;padding:5px 10px;font-size:12px;font-weight:600;cursor:pointer">${aiOn?'🤖 AI відповідає':'🙋 Я відповідаю'}</button>`;
+    const head=`<div style="display:flex;align-items:center;gap:8px;padding:14px 18px;border-bottom:1px solid #eef0f4"><b>${esc(cl.name||cl.phone||'Чат')}</b> <span style="color:#9aa3b2;font-size:12px">${esc(cl.phone||'')} ${esc(cl.company||'')}</span> ${chBadge(d.channel,d.account_label)}${replyBtn}${toggle}</div>`;
     const body=`<div class="msgs">${(d.messages||[]).map(m=>`<div class="m ${m.role}">${esc(m.content).replace(/\n/g,'<br>')}</div>`).join('')||'<div class="muted">Порожньо</div>'}</div>`;
     const bar=`<div style="display:flex;gap:8px;padding:10px 14px;border-top:1px solid #eef0f4"><input id="opMsg" placeholder="Написати клієнту як менеджер…" onkeydown="if(event.key==='Enter'){event.preventDefault();sendOperatorMsg('${id}')}" style="flex:1;border:1px solid #d8dce4;border-radius:7px;padding:9px 11px;font-size:13px"><button class="btn" onclick="sendOperatorMsg('${id}')">Надіслати</button></div>`;
     document.getElementById('conv').innerHTML=head+body+bar;
@@ -503,6 +503,12 @@ async function toggleChatAI(id,curOn){
   try{await j('/api/chat/'+id+'/ai',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled:!curOn})});
     await openChat(id);
   }catch(e){alert('Помилка: '+e)}
+}
+
+async function aiReplyNow(id,btn){
+  let old='';if(btn){old=btn.textContent;btn.disabled=true;btn.textContent='🤖 AI пише…';}
+  try{await j('/api/chat/'+id+'/ai-reply',{method:'POST'});await openChat(id);}
+  catch(e){alert('Помилка: '+e);if(btn){btn.disabled=false;btn.textContent=old;}}
 }
 
 // ── Agent master switch ──

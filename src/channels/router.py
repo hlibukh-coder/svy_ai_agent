@@ -60,6 +60,13 @@ async def route_inbound(msg: InboundMessage, adapter) -> None:
         logger.info(f"[IN] conv {conv_id} under human control — AI silent")
         return
 
+    # Manual mode: the AI does NOT reply on its own — it answers only when the
+    # operator triggers it ("AI, відповісти"). Record the inbound and stay silent.
+    if not await config.get_value("auto_reply", True):
+        await context.save_message(conv_id=conv_id, role="user", content=user_text)
+        logger.info(f"[IN] auto-reply off — saved, awaiting operator trigger ({conv_id})")
+        return
+
     # ── identity resolution (channel-aware) ──────────────────────────────────
     linked = await context.get_linked_client(conv_id=conv_id)
     client_data = None

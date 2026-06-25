@@ -11,7 +11,7 @@ DB_PATH = os.getenv("DB_PATH", "data/history.db")
 # Legacy Telegram (the single original session) is account id=1, so old bare
 # chat_ids map to "telegram:1:<chat_id>" and existing history keeps working.
 LEGACY_TG_ACCOUNT_ID = 1
-KNOWN_CHANNELS = ("telegram", "whatsapp", "email", "viber")
+KNOWN_CHANNELS = ("telegram", "whatsapp", "email", "viber", "elevenlabs")
 
 
 def legacy_conv_id(chat_id) -> str:
@@ -135,6 +135,32 @@ async def init_db():
         await db.execute("CREATE INDEX IF NOT EXISTS idx_contacts_client ON contacts(client_ref_key)")
         await db.execute("CREATE INDEX IF NOT EXISTS idx_contacts_phone ON contacts(phone)")
         await db.execute("CREATE INDEX IF NOT EXISTS idx_contacts_email ON contacts(email)")
+
+        # Voice calls (ElevenLabs post-call webhooks) — structured ledger so all the
+        # call info (summary, duration, recording, outcome) lives in one place, while
+        # the transcript itself is also mirrored into `messages` so calls show up in
+        # the dashboard "Діалоги" alongside chats. PK = provider conversation_id → the
+        # webhook is idempotent on retries / restarts.
+        await db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS calls (
+                conversation_id TEXT PRIMARY KEY,
+                conv_id         TEXT NOT NULL,
+                channel         TEXT NOT NULL DEFAULT 'elevenlabs',
+                account_id      INTEGER NOT NULL,
+                peer            TEXT,
+                phone           TEXT,
+                direction       TEXT,
+                status          TEXT,
+                duration_secs   INTEGER,
+                summary         TEXT,
+                recording_url   TEXT,
+                started_at      DATETIME,
+                created_at      DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_calls_conv ON calls(conv_id)")
         await db.commit()
 
     # accounts table + legacy seed (same DB) — lazy import avoids a circular import
@@ -204,6 +230,39 @@ async def save_message(chat_id=None, role: str = "", content: str = "", *,
             (peer, role, content, channel, account_id, cid),
         )
         await db.commit()
+
+
+# ── voice calls ───────────────────────────────────────────────────────────────
+async def save_call(conversation_id: str, conv_id: str, account_id: int, *,
+                    channel: str = "elevenlabs", peer: str = "", phone: str = "",
+                    direction: str = "", status: str = "", duration_secs: int = 0,
+                    summary: str = "", recording_url: str = "",
+                    started_at: str | None = None) -> bool:
+    """Insert a call record. Returns True if it was NEW (first time we see this
+    provider conversation_id), False if it was already ingested — so the webhook is
+    safe to retry and survives restarts without duplicating the transcript."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute(
+            "INSERT OR IGNORE INTO calls "
+            "(conversation_id, conv_id, channel, account_id, peer, phone, direction, "
+            " status, duration_secs, summary, recording_url, started_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (conversation_id, conv_id, channel, int(account_id), peer, phone, direction,
+             status, int(duration_secs or 0), summary, recording_url, started_at),
+        )
+        await db.commit()
+        return cur.rowcount > 0
+
+
+async def recent_calls(limit: int = 20) -> list[dict]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cur = await db.execute(
+            "SELECT * FROM calls ORDER BY COALESCE(started_at, created_at) DESC LIMIT ?",
+            (int(limit),),
+        )
+        rows = await cur.fetchall()
+    return [dict(r) for r in rows]
 
 
 # ── contact / identity linkage ────────────────────────────────────────────────

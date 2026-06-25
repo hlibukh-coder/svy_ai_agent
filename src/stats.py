@@ -9,7 +9,8 @@ logger = logging.getLogger(__name__)
 DB_PATH = os.getenv("DB_PATH", "data/history.db")
 
 # Canonical channel buckets + display names (donut layout expects these names).
-CHANNEL_NAMES = {"telegram": "Telegram", "whatsapp": "WhatsApp", "viber": "Viber", "email": "Email"}
+CHANNEL_NAMES = {"telegram": "Telegram", "whatsapp": "WhatsApp", "viber": "Viber",
+                 "email": "Email", "elevenlabs": "Дзвінки"}
 
 
 def _channel_name(key: str) -> str:

@@ -128,7 +128,22 @@ async def api_chat(chat_id: str):
     from src.context import is_chat_paused
     ai_paused = await is_chat_paused(chat_id)
 
-    return {"chat_id": chat_id, "messages": messages, "client": client_info, "ai_paused": ai_paused}
+    # Which channel + account this conversation belongs to, so the dashboard can
+    # show "from which account this chat is" (multi-account clarity).
+    channel, account_id, _peer = context.parse_conv_id(conv_id)
+    from src import accounts as _accounts
+    acct = await _accounts.get_account(account_id)
+    account_label = acct["label"] if acct else None
+
+    return {
+        "chat_id": chat_id,
+        "messages": messages,
+        "client": client_info,
+        "ai_paused": ai_paused,
+        "channel": channel,
+        "account_id": account_id,
+        "account_label": account_label,
+    }
 
 
 class ChatSendRequest(BaseModel):
@@ -152,6 +167,17 @@ async def api_chat_toggle_ai(chat_id: str, payload: dict):
     enabled = bool(payload.get("enabled", True))
     await context.set_chat_ai_paused(chat_id, not enabled)
     return {"chat_id": chat_id, "ai_enabled": enabled}
+
+
+@app.post("/api/chat/{chat_id}/ai-reply")
+async def api_chat_ai_reply(chat_id: str):
+    """On-demand: tell the AI to compose and send one reply now (used when auto-reply
+    is off — the AI answers only when the operator asks it to)."""
+    from src import index
+    result = await index.ai_reply_now(chat_id)
+    if not result.get("ok"):
+        raise HTTPException(status_code=409, detail=result.get("error", "AI reply failed"))
+    return result
 
 
 # ── Analytics API (overview / opportunities / channels / actions) ─────────────
@@ -361,7 +387,7 @@ async def api_accounts_create(req: AccountCreate):
     if req.channel not in accounts.VALID_CHANNELS:
         raise HTTPException(status_code=400, detail="bad channel")
     creds = dict(req.credentials or {})
-    if req.channel in ("whatsapp", "viber") and not creds.get("webhook_secret"):
+    if req.channel in ("whatsapp", "viber", "elevenlabs") and not creds.get("webhook_secret"):
         import secrets as _secrets
         creds["webhook_secret"] = _secrets.token_urlsafe(16)
     new_id = await accounts.add_account(req.channel, req.label or req.channel.title(), creds)
@@ -464,6 +490,24 @@ async def api_accounts_qr_poll(account_id: int):
 async def api_accounts_qr_password(account_id: int, payload: dict):
     from src import tg_auth
     return await tg_auth.submit_password(payload.get("password", ""), account_id)
+
+
+@app.get("/api/accounts/{account_id}/webhook")
+async def api_accounts_webhook(account_id: int):
+    """The inbound webhook URL to paste into the provider (ElevenLabs post-call
+    webhook, WAHA, Viber). Includes the per-account ?token secret."""
+    from src import accounts as _accounts
+    acct = await _accounts.get_account(account_id, include_secrets=True)
+    if not acct:
+        raise HTTPException(status_code=404, detail="account not found")
+    paths = {"elevenlabs": "elevenlabs", "whatsapp": "waha", "viber": "viber"}
+    ch = acct["channel"]
+    if ch not in paths:
+        return {"url": "", "note": "цей канал не використовує вебхук"}
+    public = os.getenv("PUBLIC_URL", "").rstrip("/") or "https://<ваш-домен>"
+    secret = (acct.get("credentials") or {}).get("webhook_secret", "")
+    url = f"{public}/webhooks/{paths[ch]}/{account_id}" + (f"?token={secret}" if secret else "")
+    return {"url": url, "channel": ch}
 
 
 # ── Operator file send + per-channel analytics ───────────────────────────────
