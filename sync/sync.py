@@ -26,11 +26,12 @@ async def sync_products(client: BASClient, pool: asyncpg.Pool, since: datetime |
     async with pool.acquire() as conn:
         await conn.executemany(
             """
-            INSERT INTO products (ref_key, name, code, deleted, price, stock)
-            VALUES ($1, $2, $3, $4, 0, 0)
+            INSERT INTO products (ref_key, name, code, bas_code, deleted, price, stock)
+            VALUES ($1, $2, $3, $4, $5, 0, 0)
             ON CONFLICT (ref_key) DO UPDATE
             SET name       = EXCLUDED.name,
                 code       = EXCLUDED.code,
+                bas_code   = EXCLUDED.bas_code,
                 deleted    = EXCLUDED.deleted,
                 updated_at = now()
             """,
@@ -38,7 +39,8 @@ async def sync_products(client: BASClient, pool: asyncpg.Pool, since: datetime |
                 (
                     i.get("Ref_Key", ""),
                     i.get("Description", ""),
-                    i.get("Артикул", "") or "",
+                    i.get("Артикул", "") or "",   # code  = Артикул (index/SKU)
+                    i.get("Code", "") or "",       # bas_code = 1C internal Код
                     bool(i.get("DeletionMark", False)),
                 )
                 for i in items

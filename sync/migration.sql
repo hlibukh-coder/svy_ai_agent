@@ -4,12 +4,15 @@
 CREATE TABLE IF NOT EXISTS products (
     ref_key    TEXT PRIMARY KEY,
     name       TEXT,
-    code       TEXT,
+    code       TEXT,            -- Артикул / SKU (the product "index")
+    bas_code   TEXT,            -- 1C internal Код (e.g. "НФ-00000670")
     deleted    BOOLEAN DEFAULT false,
     price      NUMERIC DEFAULT 0,
     stock      NUMERIC DEFAULT 0,
     updated_at TIMESTAMPTZ DEFAULT now()
 );
+-- Backfill for existing DBs created before bas_code was added.
+ALTER TABLE products ADD COLUMN IF NOT EXISTS bas_code TEXT;
 
 CREATE TABLE IF NOT EXISTS clients (
     ref_key    TEXT PRIMARY KEY,
@@ -58,5 +61,6 @@ CREATE INDEX IF NOT EXISTS idx_clients_phone      ON clients (phone);
 CREATE INDEX IF NOT EXISTS idx_orders_client      ON orders  (client_ref_key);
 CREATE INDEX IF NOT EXISTS idx_orders_date        ON orders  (date DESC);
 CREATE INDEX IF NOT EXISTS idx_products_code      ON products (code);
+CREATE INDEX IF NOT EXISTS idx_products_bas_code  ON products (bas_code);
 CREATE INDEX IF NOT EXISTS idx_products_name      ON products USING gin(to_tsvector('simple', name));
 CREATE INDEX IF NOT EXISTS idx_order_items_order  ON order_items (order_ref_key);

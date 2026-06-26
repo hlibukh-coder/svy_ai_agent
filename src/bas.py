@@ -283,6 +283,8 @@ def _normalize_code(s: str) -> str:
 
 # SQL mirror of _normalize_code applied to the products.code column.
 _CODE_NORM_SQL = "upper(replace(replace(replace(code, ' ', ''), '-', ''), '.', ''))"
+# Same mirror for the 1C internal Код (products.bas_code), e.g. "НФ-00000670".
+_BAS_CODE_NORM_SQL = "upper(replace(replace(replace(bas_code, ' ', ''), '-', ''), '.', ''))"
 
 
 async def get_products(query: str) -> list:
@@ -291,6 +293,7 @@ async def get_products(query: str) -> list:
         results = [
             p for p in MOCK_PRODUCTS
             if q in p["name"].lower() or q in p["article"].lower()
+            or q in str(p.get("bas_code", "")).lower()
         ]
         logger.info(f"[MOCK] get_products('{query}') -> {len(results)} results")
         return results
@@ -333,14 +336,18 @@ async def get_products(query: str) -> list:
                 if cat_conds else "1"
             )
 
+            # Match either identifier: code = Артикул (index), bas_code = 1C Код.
+            # $1 = "%phrase%" (substring), $2 = normalized phrase (exact match).
             sql = f"""
-                SELECT ref_key, name, code, price, stock, ({score_sql}) AS score
+                SELECT ref_key, name, code, bas_code, price, stock, ({score_sql}) AS score
                 FROM products
                 WHERE deleted = false
-                  AND ( {_CODE_NORM_SQL} = $2 OR code ILIKE $1 OR ({req_clause}) )
+                  AND ( {_CODE_NORM_SQL} = $2 OR {_BAS_CODE_NORM_SQL} = $2
+                        OR code ILIKE $1 OR bas_code ILIKE $1
+                        OR ({req_clause}) )
                 ORDER BY
-                  CASE WHEN {_CODE_NORM_SQL} = $2 THEN 0
-                       WHEN code ILIKE $1 THEN 1 ELSE 2 END,
+                  CASE WHEN {_CODE_NORM_SQL} = $2 OR {_BAS_CODE_NORM_SQL} = $2 THEN 0
+                       WHEN code ILIKE $1 OR bas_code ILIKE $1 THEN 1 ELSE 2 END,
                   {cat_boost},
                   (stock > 0) DESC,
                   score DESC,
@@ -355,6 +362,7 @@ async def get_products(query: str) -> list:
                     {
                         "article": r["code"],
                         "code": r["code"],
+                        "bas_code": r["bas_code"] or "",
                         "name": r["name"],
                         "price": float(r["price"] or 0),
                         "stock": float(r["stock"] or 0),
@@ -364,8 +372,8 @@ async def get_products(query: str) -> list:
         except Exception as e:
             logger.error(f"[PG] get_products error: {e}")
 
-    # Fallback: direct OData — Артикул is the article field (not Код); no price/stock in catalog
-    url_article = f"{BAS_URL}/Catalog_Номенклатура?$filter=Артикул eq '{query}'&$format=json"
+    # Fallback: direct OData — match Артикул (index) OR Code (1C Код); no price/stock in catalog
+    url_article = f"{BAS_URL}/Catalog_Номенклатура?$filter=Артикул eq '{query}' or Code eq '{query}'&$format=json"
     url_name = f"{BAS_URL}/Catalog_Номенклатура?$filter=contains(Description,'{query}')&$top=5&$format=json"
 
     try:
@@ -380,6 +388,7 @@ async def get_products(query: str) -> list:
                 return [
                     {
                         "article": i.get("Артикул", ""),
+                        "bas_code": i.get("Code", ""),
                         "name": i.get("Description", ""),
                         "price": 0,
                         "stock": 0,

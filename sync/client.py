@@ -36,9 +36,11 @@ class BASClient:
             return []
 
     async def get_products(self, since: datetime | None = None) -> list[dict]:
-        # Артикул = article/SKU shown to users; no price/stock in catalog
+        # Артикул = article/SKU (the "index"); Code = the 1C internal Код
+        # (e.g. "НФ-00000670"). Both are distinct identifiers customers search by.
+        # No price/stock in catalog.
         params: dict[str, Any] = {
-            "$select": "Ref_Key,Description,Артикул,DeletionMark"
+            "$select": "Ref_Key,Description,Артикул,Code,DeletionMark"
         }
         if since:
             params["$filter"] = f"Timestamp gt datetime'{since.strftime('%Y-%m-%dT%H:%M:%S')}'"
