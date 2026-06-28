@@ -231,6 +231,35 @@
 </main>
 
 <script>
+// --- fetch polyfill для старого WebKit у BAS (без CDN, на XMLHttpRequest) ---
+// Старий вбудований браузер BAS не має window.fetch, тому дашборд не тягнув дані.
+// Цей шим реалізує рівно те, що використовує функція j(): GET/POST/PATCH/DELETE,
+// headers, body, та відповідь з .ok/.status/.text()/.json(). Інтернет не потрібен.
+if(typeof window.fetch!=='function'){
+  window.fetch=function(url,opts){
+    opts=opts||{};
+    return new Promise(function(resolve,reject){
+      try{
+        var xhr=new XMLHttpRequest();
+        xhr.open(opts.method||'GET',url,true);
+        var h=opts.headers||{};
+        for(var k in h){if(h.hasOwnProperty(k)){try{xhr.setRequestHeader(k,h[k]);}catch(e){}}}
+        xhr.onreadystatechange=function(){
+          if(xhr.readyState!==4)return;
+          var body=xhr.responseText;
+          resolve({
+            ok:xhr.status>=200&&xhr.status<300,
+            status:xhr.status,
+            text:function(){return Promise.resolve(body);},
+            json:function(){return Promise.resolve(JSON.parse(body));}
+          });
+        };
+        xhr.onerror=function(){reject(new TypeError('Network request failed'));};
+        xhr.send(opts.body!==undefined?opts.body:null);
+      }catch(err){reject(err);}
+    });
+  };
+}
 const CH_COLORS={Telegram:'#2d9be0',WhatsApp:'#3fbf63',Viber:'#7c4dde',Email:'#f5a623','Дзвінки':'#12a594','Телефон':'#f5a623'};
 const CH_LABEL={telegram:'Telegram',whatsapp:'WhatsApp',email:'Email',viber:'Viber',elevenlabs:'Дзвінки'};
 const ST_LABEL={authorized:'✅ підключено',connecting:'🟡 підключення',disconnected:'⚪ не підключено',error:'🔴 помилка'};

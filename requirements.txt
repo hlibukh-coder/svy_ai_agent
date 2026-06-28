@@ -1,6 +1,6 @@
 fastapi>=0.115           # web framework for the admin dashboard + API
 uvicorn[standard]>=0.30  # ASGI server that runs main:app
-telethon==1.36.0
+telethon==1.44.0       # session file format v8 (tmp_auth_key); 1.36 can't read it
 openai>=1.30.0
 aiosqlite>=0.20.0
 aiohttp>=3.9.0
