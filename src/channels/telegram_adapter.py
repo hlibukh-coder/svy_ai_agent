@@ -211,6 +211,16 @@ class TelegramAdapter(ChannelAdapter):
         async with self._lock:
             if self.client is None or self._qr is None:
                 return {"status": "disconnected"}
+            # A scan may have completed during a previous poll (Telethon's wait()
+            # can time out at the exact moment the login token is imported). If the
+            # connection is already authorized, finalize instead of recreating.
+            try:
+                if await self.client.is_user_authorized():
+                    await self._activate(self.client)
+                    self._qr = None
+                    return {"status": "authorized"}
+            except Exception:
+                pass
             try:
                 done = await self._qr.wait(timeout=2)
                 if done:
@@ -223,6 +233,14 @@ class TelegramAdapter(ChannelAdapter):
                 try:
                     self._qr = await self.client.qr_login()
                     return {"status": "waiting", "svg": _qr_svg(self._qr.url)}
+                except AttributeError:
+                    # ExportLoginToken returned LoginTokenSuccess (no .token) → the
+                    # scan actually succeeded; finalize the login.
+                    if await self.client.is_user_authorized():
+                        await self._activate(self.client)
+                        self._qr = None
+                        return {"status": "authorized"}
+                    return {"status": "waiting"}
                 except Exception as e:
                     logger.error(f"[TG:{self.account_id}] QR recreate failed: {e}")
                     return {"status": "waiting"}

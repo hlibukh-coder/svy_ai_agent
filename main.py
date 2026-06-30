@@ -160,6 +160,19 @@ async def api_chat_operator_send(chat_id: str, req: ChatSendRequest):
     return result
 
 
+@app.post("/api/chat/{chat_id}/command")
+async def api_chat_operator_command(chat_id: str, req: ChatSendRequest):
+    """Operator drives the agent like an employee: a free-text instruction (e.g.
+    «выстави КП на позицию X, 5000 шт, по 1.25 грн») is executed with the full toolset
+    in this chat's context. The КП PDF / order / file go to the client via tools; the
+    agent's text reply is returned here to the operator."""
+    from src import index
+    result = await index.operator_command(chat_id, req.text)
+    if not result.get("ok"):
+        raise HTTPException(status_code=409, detail=result.get("error", "command failed"))
+    return result
+
+
 @app.post("/api/chat/{chat_id}/ai")
 async def api_chat_toggle_ai(chat_id: str, payload: dict):
     """Enable/disable the AI for a single chat (human takeover toggle)."""

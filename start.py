@@ -88,10 +88,24 @@ def ensure_env_file():
               "перед роботою з реальними даними.")
 
 
+def ensure_database():
+    """Create the PostgreSQL DB + apply schema if needed (no-op on USE_MOCK / no DB).
+    Runs with the venv python so asyncpg/dotenv are available. Never fatal."""
+    py = venv_python()
+    if not py.exists():
+        return
+    print("▶ Перевіряю базу даних (PostgreSQL)…")
+    try:
+        run([str(py), "-m", "sync.bootstrap_db"])
+    except subprocess.CalledProcessError:
+        print("⚠ Налаштування БД не вдалося — сервер усе одно запуститься (дані можуть бути порожні).")
+
+
 def serve(host: str, port: str):
     ensure_python_version()
     ensure_venv_and_deps()
     ensure_env_file()
+    ensure_database()
     print(f"\n▶ Запуск сервера на http://{host}:{port}  (Ctrl+C — зупинити)")
     print(f"  Дашборд:  http://{host}:{port}/dashboard\n")
     # -m uvicorn працює однаково на всіх ОС (не залежить від шляху до консольного скрипта)
@@ -118,7 +132,7 @@ def main():
         i += 1
 
     if cmd == "setup":
-        ensure_python_version(); ensure_venv_and_deps(); ensure_env_file()
+        ensure_python_version(); ensure_venv_and_deps(); ensure_env_file(); ensure_database()
         print("✓ Готово. Запуск: python start.py")
     elif cmd == "test":
         ensure_python_version(); ensure_venv_and_deps()

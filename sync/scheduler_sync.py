@@ -8,6 +8,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from sync.client import BASClient
 from sync.sync import run_full_sync, load_last_sync, save_last_sync
+from sync.site_catalog import sync_site_offers
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +60,10 @@ async def _sync_job():
         await save_last_sync(_pool, _last_sync)
     except Exception as e:
         logger.error(f"[SYNC SCHEDULER] sync failed: {e}")
+    try:
+        await sync_site_offers(_pool)
+    except Exception as e:
+        logger.error(f"[SYNC SCHEDULER] site catalog sync failed: {e}")
 
 
 async def run_now():
@@ -74,6 +79,10 @@ async def run_now():
         await save_last_sync(_pool, _last_sync)
     except Exception as e:
         logger.error(f"[SYNC SCHEDULER] initial sync failed: {e}")
+    try:
+        await sync_site_offers(_pool)
+    except Exception as e:
+        logger.error(f"[SYNC SCHEDULER] initial site catalog sync failed: {e}")
 
 
 def stop():

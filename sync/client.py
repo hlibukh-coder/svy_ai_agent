@@ -23,7 +23,8 @@ class BASClient:
         self.base_url = base_url.rstrip("/")
         self.auth = (login, password)
 
-    async def _get(self, entity: str, params: dict | None = None) -> list[dict]:
+    async def _get(self, entity: str, params: dict | None = None,
+                   raise_on_error: bool = False) -> list[dict]:
         url = f"{self.base_url}/{entity}"
         query = {"$format": "json", **(params or {})}
         try:
@@ -31,8 +32,17 @@ class BASClient:
                 r = await client.get(url, params=query, auth=self.auth)
                 r.raise_for_status()
                 return r.json().get("value", [])
+        except httpx.HTTPStatusError as e:
+            # Log the server's response body — BAS/1C 500s carry the real reason there.
+            body = (e.response.text or "")[:300].replace("\n", " ")
+            logger.error(f"[BAS OData] GET {entity} HTTP {e.response.status_code}: {body}")
+            if raise_on_error:
+                raise
+            return []
         except Exception as e:
             logger.error(f"[BAS OData] GET {entity} error: {e}")
+            if raise_on_error:
+                raise
             return []
 
     async def get_products(self, since: datetime | None = None) -> list[dict]:
@@ -65,15 +75,31 @@ class BASClient:
     async def get_orders(self, since: datetime | None = None) -> list[dict]:
         # Real BAS field names: Posted, Number (Ukrainian BAS uses English API names)
         # Expand of tabular sections is not supported by this BAS OData endpoint
-        params: dict[str, Any] = {
-            "$select": "Ref_Key,Date,Контрагент_Key,СуммаДокумента,Posted,Number",
-        }
-        if since:
-            params["$filter"] = f"Date gt datetime'{since.strftime('%Y-%m-%dT%H:%M:%S')}'"
-        else:
-            params["$orderby"] = "Date desc"
-            params["$top"] = "5000"
-        return await self._get("Document_ЗаказПокупателя", params)
+        select = "Ref_Key,Date,Контрагент_Key,СуммаДокумента,Posted,Number"
+        if not since:
+            return await self._get(
+                "Document_ЗаказПокупателя",
+                {"$select": select, "$orderby": "Date desc", "$top": "5000"},
+            )
+        # Incremental: this BAS OData 500s on `$filter=Date gt datetime'…'`. Try it,
+        # but fall back to the known-good full pull + client-side date filter so order
+        # updates keep flowing even while the server rejects the filtered query.
+        try:
+            return await self._get(
+                "Document_ЗаказПокупателя",
+                {"$select": select,
+                 "$filter": f"Date gt datetime'{since.strftime('%Y-%m-%dT%H:%M:%S')}'"},
+                raise_on_error=True,
+            )
+        except Exception:
+            logger.warning("[BAS OData] orders incremental filter failed — "
+                           "falling back to full pull + local date filter")
+            rows = await self._get(
+                "Document_ЗаказПокупателя",
+                {"$select": select, "$orderby": "Date desc", "$top": "5000"},
+            )
+            cutoff = since.strftime("%Y-%m-%dT%H:%M:%S")
+            return [r for r in rows if str(r.get("Date") or "") > cutoff]
 
     async def get_stock(self) -> list[dict]:
         # Raw movement records: Количество + RecordType (Receipt/Expense) per Номенклатура_Key

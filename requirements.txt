@@ -9,6 +9,7 @@ python-dotenv>=1.0.0
 asyncpg>=0.29.0
 httpx>=0.27.0
 qrcode>=7.4            # QR login (Telegram + WhatsApp pairing)
+fpdf2>=2.7             # PDF commercial offers (КП); Cyrillic via bundled assets/fonts/DejaVuSans.ttf
 cryptography>=42.0     # Fernet encryption of account credentials at rest
 # Email channel uses stdlib imaplib/smtplib via asyncio.to_thread — no extra deps.
 pytest>=8.0              # test suite (python start.py test / ./run.sh test)

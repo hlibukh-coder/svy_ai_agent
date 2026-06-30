@@ -514,8 +514,9 @@ async function openChat(id){
     const toggle=`<button onclick="toggleChatAI('${id}',${aiOn})" title="Хто відповідає в цьому чаті за замовчуванням" style="border:1px solid ${aiOn?'#2e9e57':'#e0524d'};color:${aiOn?'#2e9e57':'#e0524d'};background:#fff;border-radius:7px;padding:5px 10px;font-size:12px;font-weight:600;cursor:pointer">${aiOn?'🤖 AI відповідає':'🙋 Я відповідаю'}</button>`;
     const head=`<div style="display:flex;align-items:center;gap:8px;padding:14px 18px;border-bottom:1px solid #eef0f4"><b>${esc(cl.name||cl.phone||'Чат')}</b> <span style="color:#9aa3b2;font-size:12px">${esc(cl.phone||'')} ${esc(cl.company||'')}</span> ${chBadge(d.channel,d.account_label)}${replyBtn}${toggle}</div>`;
     const body=`<div class="msgs">${(d.messages||[]).map(m=>`<div class="m ${m.role}">${esc(m.content).replace(/\n/g,'<br>')}</div>`).join('')||'<div class="muted">Порожньо</div>'}</div>`;
+    const cmdBar=`<div style="display:flex;gap:8px;padding:10px 14px;border-top:1px solid #eef0f4;background:#f6f4ff"><input id="agentCmd" placeholder="⚡ Команда агенту: напр. «виставь КП на DIN 933, 5000 шт, по 1.25 грн»" onkeydown="if(event.key==='Enter'){event.preventDefault();sendAgentCommand('${id}')}" style="flex:1;border:1px solid #c3b6f0;border-radius:7px;padding:9px 11px;font-size:13px"><button class="btn" style="background:#5b34d6" onclick="sendAgentCommand('${id}')">⚡ Виконати</button></div><div id="cmdOut" style="padding:0 14px 8px;font-size:12px;color:#5b34d6;background:#f6f4ff"></div>`;
     const bar=`<div style="display:flex;gap:8px;padding:10px 14px;border-top:1px solid #eef0f4"><input id="opMsg" placeholder="Написати клієнту як менеджер…" onkeydown="if(event.key==='Enter'){event.preventDefault();sendOperatorMsg('${id}')}" style="flex:1;border:1px solid #d8dce4;border-radius:7px;padding:9px 11px;font-size:13px"><button class="btn" onclick="sendOperatorMsg('${id}')">Надіслати</button></div>`;
-    document.getElementById('conv').innerHTML=head+body+bar;
+    document.getElementById('conv').innerHTML=head+body+cmdBar+bar;
     const b=document.querySelector('#conv .msgs');if(b)b.scrollTop=b.scrollHeight;
   }catch(e){document.getElementById('conv').innerHTML='<div class="muted">Помилка</div>'}
 }
@@ -532,6 +533,17 @@ async function toggleChatAI(id,curOn){
   try{await j('/api/chat/'+id+'/ai',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled:!curOn})});
     await openChat(id);
   }catch(e){alert('Помилка: '+e)}
+}
+
+async function sendAgentCommand(id){
+  const inp=document.getElementById('agentCmd');if(!inp)return;const t=(inp.value||'').trim();if(!t)return;
+  const out=document.getElementById('cmdOut');inp.disabled=true;if(out)out.textContent='⚡ Агент виконує…';
+  try{const r=await j('/api/chat/'+id+'/command',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:t})});
+    await openChat(id);
+    const out2=document.getElementById('cmdOut');
+    const tl=(r.tools||[]).length?(' · інструменти: '+r.tools.join(', ')):'';
+    if(out2)out2.textContent='✓ '+(r.reply||'Виконано')+tl;
+  }catch(e){const out2=document.getElementById('cmdOut');if(out2)out2.textContent='✗ '+e;else alert('Помилка: '+e);}
 }
 
 async function aiReplyNow(id,btn){

@@ -161,6 +161,7 @@ async def _check_reorder_clients() -> int:
         logger.info("[SCHEDULER] reorder skipped (agent paused or disabled)")
         return 0
     window = int(cfg.get("reorder_window_days", 1))
+    cooldown = int(cfg.get("reorder_cooldown_days", 14))
     throttle = float(cfg.get("throttle_sec", 2))
     cap = int(cfg.get("max_per_run", 50))
 
@@ -171,6 +172,10 @@ async def _check_reorder_clients() -> int:
         if sent >= cap or _cancel:
             break
         name, phone = entry["name"], entry["phone"]
+        # Skip clients we already pinged for reorder recently (the ±window means the
+        # same client matches for several consecutive days otherwise).
+        if await config.was_contacted(entry["client_ref_key"], "reorder", cooldown):
+            continue
         orders = await _get_orders_for_client(entry["client_ref_key"])
         dates = [o["date"] for o in orders if o.get("date")]
         if len(dates) < 2:
@@ -191,6 +196,7 @@ async def _check_reorder_clients() -> int:
         )
         text = await outbound.compose_message("повторная закупка (срок подошёл)", name, ctx)
         if text and await _deliver(phone, name, text):
+            await config.mark_contacted(entry["client_ref_key"], "reorder")
             sent += 1
             await asyncio.sleep(throttle)
     logger.info(f"[SCHEDULER] reorder check done, sent={sent}")
@@ -204,6 +210,7 @@ async def _check_inactive_clients(days_threshold: int | None = None) -> int:
         logger.info("[SCHEDULER] inactive skipped (agent paused or disabled)")
         return 0
     threshold = days_threshold if days_threshold is not None else int(cfg.get("inactive_days", 60))
+    cooldown = int(cfg.get("inactive_cooldown_days", 45))
     throttle = float(cfg.get("throttle_sec", 2))
     cap = int(cfg.get("max_per_run", 50))
 
@@ -215,6 +222,9 @@ async def _check_inactive_clients(days_threshold: int | None = None) -> int:
         if sent >= cap or _cancel:
             break
         name, phone = entry["name"], entry["phone"]
+        # Without this, every inactive client gets re-messaged on each run (daily).
+        if await config.was_contacted(entry["client_ref_key"], "inactive", cooldown):
+            continue
         orders = await _get_orders_for_client(entry["client_ref_key"])
         dates = [o["date"] for o in orders if o.get("date")]
         if not dates:
@@ -231,6 +241,7 @@ async def _check_inactive_clients(days_threshold: int | None = None) -> int:
         )
         text = await outbound.compose_message("возврат клиента / давно не общались", name, ctx)
         if text and await _deliver(phone, name, text):
+            await config.mark_contacted(entry["client_ref_key"], "inactive")
             sent += 1
             await asyncio.sleep(throttle)
     logger.info(f"[SCHEDULER] inactive check done, sent={sent}")
@@ -255,6 +266,7 @@ async def _notify_new_products() -> int:
     product_name = product.get("name", "")
     if not product_name:
         return 0
+    product_ref = str(product.get("ref_key") or product_name)
     price = product.get("price", 0)
     price_str = f", цена {price} грн/шт" if price else ""
 
@@ -264,6 +276,9 @@ async def _notify_new_products() -> int:
         if sent >= cap or _cancel:
             break
         name, phone = entry["name"], entry["phone"]
+        # Never pitch the same new product to the same client twice.
+        if await config.was_contacted(entry["client_ref_key"], "newproduct", None, product_ref):
+            continue
         orders = await _get_orders_for_client(entry["client_ref_key"])
         if not orders:
             continue
@@ -274,6 +289,7 @@ async def _notify_new_products() -> int:
         )
         text = await outbound.compose_message("новый товар в наличии", name, ctx)
         if text and await _deliver(phone, name, text):
+            await config.mark_contacted(entry["client_ref_key"], "newproduct", product_ref)
             sent += 1
             await asyncio.sleep(throttle)
     logger.info(f"[SCHEDULER] new-product check done, sent={sent}")

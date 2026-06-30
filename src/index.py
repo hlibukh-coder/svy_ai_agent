@@ -418,6 +418,67 @@ async def ai_reply_now(chat_id: str) -> dict:
     return {"ok": True, "reply": reply}
 
 
+OPERATOR_COMMAND_DIRECTIVE = (
+    "РЕЖИМ КОМАНДИ ОПЕРАТОРА. Нижче — пряме розпорядження вашого керівника (оператора), "
+    "а не повідомлення клієнта. Виконайте його за допомогою доступних інструментів у "
+    "контексті ЦІЄЇ розмови з клієнтом.\n"
+    "• «Виставити/відправити КП (комерційну пропозицію)» → виклич інструмент create_offer "
+    "(позиція, кількість, ціна якщо вказана) — він сам сформує PDF і надішле клієнту.\n"
+    "• «Оформити замовлення» → create_order. «Надіслати прайс/паспорт/рахунок» → send_file.\n"
+    "• Якщо це лише внутрішня перевірка (наявність, ціна, історія) — поверни відповідь "
+    "оператору текстом, клієнту нічого не надсилай.\n"
+    "Твоя текстова відповідь повертається ОПЕРАТОРУ як підтвердження виконання; клієнт "
+    "отримує лише те, що надсилають інструменти. Стисло підтверди, що зроблено."
+)
+
+
+async def operator_command(chat_id: str, instruction: str) -> dict:
+    """Operator drives the agent like an employee: a free-text instruction is executed
+    with the full toolset in the context of this conversation (e.g. "выстави КП на
+    позицию X, N штук, по Y грн" → create_offer builds the PDF and sends it to the
+    client). The agent's text reply is returned to the OPERATOR, not the client."""
+    instruction = (instruction or "").strip()
+    if not instruction:
+        return {"ok": False, "error": "Порожня команда"}
+    conv_id = context.as_conv_id(chat_id)
+    channel, account_id, peer = context.parse_conv_id(conv_id)
+
+    linked = await context.get_linked_client(conv_id=conv_id)
+    phone = (linked or {}).get("phone") or ""
+    client_data = await bas.get_client(phone) if phone else None
+    if not client_data and linked and linked.get("client_ref_key"):
+        client_data = {"id": linked["client_ref_key"], "name": linked.get("name", ""),
+                       "phone": phone, "company": "", "city": ""}
+    orders = await bas.get_orders(client_data["id"]) if client_data else []
+    cfg_prompt = await config.get_value("system_prompt", "")
+    system_prompt = build_system_prompt(client_data, orders, base_prompt=cfg_prompt or None)
+    history = await context.load_history(conv_id=conv_id, limit=20)
+
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "system", "content": OPERATOR_COMMAND_DIRECTIVE},
+        *history,
+        {"role": "user", "content": f"[КОМАНДА ОПЕРАТОРА]: {instruction}"},
+    ]
+    conv = {"conv_id": conv_id, "channel": channel, "account_id": account_id,
+            "peer": peer, "phone": phone,
+            "client_name": (client_data or {}).get("name", "") or (linked or {}).get("name", "")}
+    try:
+        reply, called = await run_openai(messages, phone, conv=conv)
+    except Exception as e:
+        logger.error(f"[OPERATOR-CMD] OpenAI error for {conv_id}: {e}")
+        return {"ok": False, "error": str(e)}
+
+    await config.log_event(
+        "operator_command",
+        f"Команда оператора: {instruction[:80]}",
+        {"conv_id": conv_id, "tools": sorted(called),
+         "channel": channel, "account_id": account_id},
+    )
+    logger.info(f"[OPERATOR-CMD] {conv_id} tools={sorted(called)} :: {instruction[:80]}")
+    return {"ok": True, "reply": reply or "Виконано.", "tools": sorted(called)}
+
+
 async def activate_client(tg_client, start_scheduler: bool = True):
     """Back-compat: wrap an already-authorized Telethon client in the legacy
     TelegramAdapter (account id=1) and register it."""

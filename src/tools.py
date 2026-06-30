@@ -195,6 +195,44 @@ TOOLS_SCHEMA = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "create_offer",
+            "description": (
+                "Сформировать коммерческое предложение (КП) в PDF и отправить клиенту в "
+                "текущий чат. Используй, когда клиент готов получить КП или оператор дал "
+                "команду «выстави КП». Для каждой позиции укажи название ИЛИ артикул, "
+                "количество и (если задана) цену; если цену не указать — берётся из "
+                "каталога сайта/BAS. Сумму считать НЕ нужно — она считается сама."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "client_name":  {"type": "string", "description": "Имя/название клиента"},
+                    "client_phone": {"type": "string", "description": "Телефон клиента"},
+                    "company":      {"type": "string", "description": "Компания (для юрлица, необязательно)"},
+                    "items": {
+                        "type": "array",
+                        "description": "Позиции КП",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "name":    {"type": "string", "description": "Название товара"},
+                                "article": {"type": "string", "description": "Артикул/код (vendorCode)"},
+                                "qty":     {"type": "number", "description": "Количество"},
+                                "price":   {"type": "number", "description": "Цена за шт, грн (если задана оператором)"},
+                            },
+                            "required": ["qty"],
+                        },
+                    },
+                    "comment": {"type": "string", "description": "Комментарий в КП (условия, сроки)"},
+                    "caption": {"type": "string", "description": "Подпись к файлу в мессенджере (необязательно)"},
+                },
+                "required": ["items"],
+            },
+        },
+    },
 ]
 
 # Will be set from index.py after tg client is ready
@@ -296,7 +334,64 @@ async def execute_tool(name: str, arguments: dict, sender_phone: str = "", conv:
     elif name == "send_file":
         return await _handle_send_file(arguments, conv)
 
+    elif name == "create_offer":
+        return await _handle_create_offer(arguments, sender_phone, conv)
+
     return json.dumps({"error": f"Unknown tool: {name}"}, ensure_ascii=False)
+
+
+async def _handle_create_offer(arguments: dict, sender_phone: str, conv: dict | None) -> str:
+    """Build a КП PDF and send it to the client in the current chat."""
+    from src import offer
+    if not conv or not conv.get("conv_id"):
+        return json.dumps({"ok": False, "error": "Нет контекста чата для отправки КП"},
+                          ensure_ascii=False)
+    items = arguments.get("items") or []
+    if not items:
+        return json.dumps({"ok": False, "error": "Не указаны позиции для КП"}, ensure_ascii=False)
+    try:
+        doc = await offer.build_offer_doc(
+            client_name=arguments.get("client_name", "") or (conv or {}).get("client_name", ""),
+            client_phone=arguments.get("client_phone", sender_phone) or sender_phone,
+            company=arguments.get("company", ""),
+            items=items,
+            comment=arguments.get("comment", ""),
+        )
+    except Exception as e:
+        logger.error(f"[OFFER] build failed: {e}")
+        return json.dumps({"ok": False, "error": f"Не удалось собрать КП: {e}"}, ensure_ascii=False)
+
+    caption = arguments.get("caption") or f"Комерційна пропозиція {doc['offer_no']}"
+    res = await _send_doc(conv, doc, caption)
+    if res.get("ok"):
+        await config.log_event(
+            "offer_sent",
+            f"Відправлено КП {doc['offer_no']} ({offer._fmt(doc['total'])} грн)",
+            {"offer_no": doc["offer_no"], "total": doc["total"],
+             "channel": conv.get("channel"), "account_id": conv.get("account_id")},
+        )
+        return json.dumps({"ok": True, "offer_no": doc["offer_no"], "total": doc["total"],
+                           "lines": doc["lines"]}, ensure_ascii=False)
+    return json.dumps({"ok": False, "error": res.get("error", "send failed"),
+                       "offer_no": doc["offer_no"]}, ensure_ascii=False)
+
+
+async def _send_doc(conv: dict, doc: dict, caption: str = "") -> dict:
+    """Send an in-memory/file doc through the conversation's channel adapter."""
+    from src.channels import registry
+    adapter = registry.get_by_conv(conv["conv_id"])
+    if adapter is None:
+        return {"ok": False, "error": "Канал недоступен"}
+    src = doc["src"]
+    size = len(src) if isinstance(src, (bytes, bytearray)) else (
+        os.path.getsize(src) if isinstance(src, str) and os.path.exists(src) else 0)
+    if size and size > adapter.max_file_bytes():
+        return {"ok": False, "error": "Файл слишком большой для этого канала"}
+    res = await adapter.send_file(
+        conv["peer"], src, caption=caption,
+        filename=doc["filename"], mimetype=doc["mimetype"],
+    )
+    return {"ok": res.ok, "error": res.error}
 
 
 # ── file sending (AI tool + dashboard operator) ──────────────────────────────

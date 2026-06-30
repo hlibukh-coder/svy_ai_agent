@@ -603,6 +603,7 @@ async def get_new_products(since_days: int = 7) -> list:
             if rows:
                 return [
                     {
+                        "ref_key": r["ref_key"],
                         "article": r["code"],
                         "name": r["name"],
                         "price": float(r["price"] or 0),
