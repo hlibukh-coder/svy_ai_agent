@@ -583,6 +583,17 @@ async def startup():
 
             pool = await asyncpg.create_pool(DATABASE_URL, min_size=1, max_size=5)
             bas_client = BASClient()
+            # Ensure the FULL schema exists in whatever DB DATABASE_URL points at
+            # (local Postgres OR a fresh managed cloud DB like Neon) — otherwise the
+            # first sync fails with UndefinedTable. migration.sql is all IF NOT EXISTS.
+            try:
+                mig = Path(__file__).parent / "sync" / "migration.sql"
+                if mig.exists():
+                    async with pool.acquire() as _c:
+                        await _c.execute(mig.read_text(encoding="utf-8"))
+                    logger.info("[STARTUP] schema applied (migration.sql)")
+            except Exception as e:
+                logger.error(f"[STARTUP] schema apply failed: {e}")
             await scheduler_sync.init(pool, bas_client)
             await config.ensure_tables()          # agent_config + agent_events + orders attribution
             asyncio.create_task(scheduler_sync.run_now())

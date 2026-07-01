@@ -41,32 +41,37 @@ async def _bootstrap() -> None:
     parts = urlsplit(db_url)
     dbname = parts.path.lstrip("/") or "postgres"
     # Maintenance connection to the default 'postgres' DB to (maybe) CREATE the target.
+    # On managed hosts (Neon/Supabase/RDS) the DB already exists and the admin DB may
+    # be unreachable — that's fine, we skip creation and apply the schema directly.
     admin_url = urlunsplit((parts.scheme, parts.netloc, "/postgres", parts.query, parts.fragment))
-
     try:
         admin = await asyncpg.connect(admin_url, timeout=10)
+        try:
+            exists = await admin.fetchval("SELECT 1 FROM pg_database WHERE datname = $1", dbname)
+            if not exists:
+                # asyncpg can't parametrize identifiers; dbname comes from our own .env.
+                await admin.execute(f'CREATE DATABASE "{dbname}"')
+                print(f"✓ Створив базу даних «{dbname}».")
+            else:
+                print(f"· База даних «{dbname}» вже існує.")
+        finally:
+            await admin.close()
     except Exception as e:
-        print(f"⚠ bootstrap БД: не вдалося підключитись до PostgreSQL ({e}).")
-        print(f"  Перевірте, що Postgres запущено і DATABASE_URL вірний: {parts.netloc}")
-        print("  Дашборд підніметься, але товари/клієнти будуть порожні, поки немає БД.")
-        return
-
-    try:
-        exists = await admin.fetchval("SELECT 1 FROM pg_database WHERE datname = $1", dbname)
-        if not exists:
-            # asyncpg can't parametrize identifiers; dbname comes from our own .env.
-            await admin.execute(f'CREATE DATABASE "{dbname}"')
-            print(f"✓ Створив базу даних «{dbname}».")
-        else:
-            print(f"· База даних «{dbname}» вже існує.")
-    finally:
-        await admin.close()
+        # Can't reach the admin DB — assume the target DB already exists (managed host).
+        print(f"· Пропускаю створення БД (адмін-підключення недоступне: {type(e).__name__}); "
+              f"вважаю, що «{dbname}» вже існує.")
 
     if not MIGRATION.exists():
         print(f"⚠ Немає {MIGRATION} — пропускаю застосування схеми.")
         return
 
-    conn = await asyncpg.connect(db_url, timeout=10)
+    try:
+        conn = await asyncpg.connect(db_url, timeout=15)
+    except Exception as e:
+        print(f"⚠ bootstrap БД: не вдалося підключитись до «{dbname}» ({e}).")
+        print(f"  Перевірте DATABASE_URL: {parts.netloc}")
+        print("  Дашборд підніметься, але товари/клієнти будуть порожні, поки немає БД.")
+        return
     try:
         await conn.execute(MIGRATION.read_text(encoding="utf-8"))
         print("✓ Схему застосовано (sync/migration.sql).")
