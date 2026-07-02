@@ -637,11 +637,19 @@ async function stopManual(){
 }
 
 // ── live refresh: active tab + timestamp ──
+// True while the operator is typing in either composer (message or agent command),
+// so background refreshes don't wipe the box mid-typing.
+function chatBusy(){
+  return ['opMsg','agentCmd'].some(function(idn){
+    const el=document.getElementById(idn);
+    return el&&(el===document.activeElement||(el.value||'').length>0);
+  });
+}
 function refreshActive(){
   const t=document.querySelector('.tab.active');if(!t)return;
   const id=t.id.replace('tab-','');
   if(id==='overview')loadOverview();
-  else if(id==='dialogs'){loadChats();if(cur)openChat(cur);}
+  else if(id==='dialogs'){loadChats();if(cur&&!chatBusy())openChat(cur);}
   else if(id==='campaigns')loadCampaigns();
   refreshAgentState();tgRefreshStatus();
   document.getElementById('updTxt').textContent='оновлено '+new Date().toLocaleTimeString('uk-UA',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
@@ -653,7 +661,7 @@ tgRefreshStatus();
 refreshActive();
 setInterval(refreshActive,10000);
 // Live-refresh the open chat, but don't clobber what the operator is typing
-setInterval(()=>{const inp=document.getElementById('opMsg');if(cur&&!(inp&&(inp===document.activeElement||inp.value)))openChat(cur);},5000);
+setInterval(()=>{if(cur&&!chatBusy())openChat(cur);},5000);
 </script>
 </body>
 </html>
