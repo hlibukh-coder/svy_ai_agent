@@ -33,8 +33,11 @@ cd svy_ai_agent
 → в телефоне WhatsApp → Связанные устройства → сканировать.
 ```
 
-> Нужен установленный **Docker Desktop** (иначе WhatsApp останется офлайн, всё
-> остальное работает). Отключить авто-запуск: `WAHA_AUTOSTART=false` в `.env`.
+> **Docker ставится сам.** Если Docker'а нет, лаунчер пытается его установить:
+> macOS → colima через Homebrew (без GUI/админки), Windows → Docker Desktop через
+> winget, Linux → get.docker.com. На Windows/macOS может понадобиться **один раз**
+> подтвердить права админа / перезагрузиться / запустить Docker Desktop — дальше
+> всё поднимается само. Отключить: `DOCKER_AUTOINSTALL=false` / `WAHA_AUTOSTART=false`.
 
 ## Каждый день / после изменений
 

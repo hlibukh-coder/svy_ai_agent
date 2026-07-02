@@ -43,13 +43,40 @@ is_running() { [ -n "$(port_pid)" ]; }
 # ── WAHA (WhatsApp gateway) auto-start у Docker — щоб WhatsApp працював "з коробки".
 # Оператору лишається тільки відсканувати QR у дашборді. Вимкнути: WAHA_AUTOSTART=false.
 waha_up() { curl -fsS -m 2 "${1}/" >/dev/null 2>&1 || curl -fsS -m 2 "${1}/api/sessions" >/dev/null 2>&1; }
+
+# Docker daemon present AND responding.
+docker_ready() { command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; }
+
+# Try to install/start Docker automatically (best-effort). macOS → colima via brew
+# (headless, no admin/GUI); Linux → official get.docker.com. Disable: DOCKER_AUTOINSTALL=false.
+ensure_docker() {
+  docker_ready && return 0
+  [ "${DOCKER_AUTOINSTALL:-true}" = "true" ] || { echo "⚠ Docker недоступний (DOCKER_AUTOINSTALL=false)."; return 1; }
+  echo "▶ Docker не знайдено/не запущено — пробую підняти автоматично…"
+  if [ "$(uname -s)" = "Darwin" ]; then
+    if ! command -v colima >/dev/null 2>&1 || ! command -v docker >/dev/null 2>&1; then
+      if command -v brew >/dev/null 2>&1; then brew install colima docker || true
+      else echo "⚠ Немає Homebrew — постав Docker Desktop: https://www.docker.com/products/docker-desktop"; return 1; fi
+    fi
+    command -v colima >/dev/null 2>&1 && { colima status >/dev/null 2>&1 || colima start || true; }
+  else
+    if command -v curl >/dev/null 2>&1; then
+      if [ "$(id -u)" = "0" ]; then curl -fsSL https://get.docker.com | sh || true
+      elif command -v sudo >/dev/null 2>&1; then curl -fsSL https://get.docker.com | sudo sh || true
+      else echo "⚠ Постав Docker: https://docs.docker.com/engine/install/"; return 1; fi
+    else echo "⚠ Постав Docker: https://docs.docker.com/engine/install/"; return 1; fi
+  fi
+  for _ in $(seq 1 60); do docker_ready && { echo "✓ Docker готовий."; return 0; }; sleep 2; done
+  echo "⚠ Docker ще не готовий — запусти Docker Desktop / \`colima start\` і повтори."
+  return 1
+}
+
 ensure_waha() {
   [ "${WAHA_AUTOSTART:-true}" = "true" ] || return 0
   local url="${WAHA_URL:-http://localhost:3000}"; url="${url%/}"
   if waha_up "$url"; then echo "✓ WAHA (WhatsApp) вже працює на ${url}"; return 0; fi
-  if ! command -v docker >/dev/null 2>&1; then
-    echo "⚠ WhatsApp: Docker не знайдено — WAHA не запущено (усе інше працює)."
-    echo "  Встанови Docker Desktop, і WhatsApp підніметься сам."
+  if ! ensure_docker; then
+    echo "⚠ WhatsApp офлайн — Docker недоступний. Усе інше працює."
     return 0
   fi
   local name="${WAHA_CONTAINER:-svy_waha}" image="${WAHA_IMAGE:-devlikeapro/waha}"

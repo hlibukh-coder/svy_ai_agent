@@ -114,11 +114,95 @@ def _http_reachable(url: str, timeout: float = 2.0) -> bool:
         return False
 
 
+def _docker_ready() -> bool:
+    """docker CLI present AND the daemon actually responds."""
+    from shutil import which
+    if which("docker") is None:
+        return False
+    try:
+        return subprocess.run(["docker", "info"], stdout=subprocess.DEVNULL,
+                              stderr=subprocess.DEVNULL, timeout=25).returncode == 0
+    except Exception:
+        return False
+
+
+def _run_soft(cmd, timeout=None, shell=False) -> bool:
+    """Run a command, print it, never raise. Returns True on exit code 0."""
+    print("· " + (cmd if shell else " ".join(str(c) for c in cmd)))
+    try:
+        return subprocess.run(cmd, timeout=timeout, shell=shell).returncode == 0
+    except Exception as e:
+        print(f"  (не вдалося: {e})")
+        return False
+
+
+def ensure_docker() -> bool:
+    """Make sure a Docker daemon is available; try to install/start it if not.
+    Docker is required for WAHA (WhatsApp). Best-effort with honest fallbacks —
+    Windows/macOS may need a one-time admin prompt, reboot, or first app launch
+    that no script can skip. Disable with DOCKER_AUTOINSTALL=false."""
+    if _docker_ready():
+        return True
+    if os.getenv("DOCKER_AUTOINSTALL", "true").lower() != "true":
+        print("⚠ Docker недоступний, а DOCKER_AUTOINSTALL=false — пропускаю встановлення.")
+        return False
+
+    from shutil import which
+    plat = sys.platform
+    print("▶ Docker не знайдено або не запущено — пробую підняти автоматично…")
+
+    if plat == "darwin":
+        # Headless path: colima gives a docker daemon WITHOUT the Docker Desktop
+        # GUI / admin rights. If colima+docker aren't there, install via Homebrew.
+        if which("colima") is None or which("docker") is None:
+            if which("brew"):
+                _run_soft(["brew", "install", "colima", "docker"], timeout=1800)
+            else:
+                print("⚠ Немає Homebrew — не можу поставити Docker сам. Один рядок постав його:")
+                print('  /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"')
+                print("  або Docker Desktop: https://www.docker.com/products/docker-desktop  — і запусти знову.")
+                return False
+        if which("colima"):
+            _run_soft(["colima", "start"], timeout=600)
+
+    elif plat.startswith("win"):
+        if which("winget"):
+            print("▶ Встановлюю Docker Desktop через winget (можливий запит прав адміністратора)…")
+            _run_soft(["winget", "install", "-e", "--id", "Docker.DockerDesktop",
+                       "--accept-package-agreements", "--accept-source-agreements"], timeout=2400)
+            print("ℹ Docker Desktop встановлено. Часто потрібно ОДИН раз перезавантажити ПК і")
+            print("  запустити Docker Desktop — після цього WhatsApp підніметься сам.")
+        else:
+            print("⚠ Немає winget — постав Docker Desktop вручну один раз:")
+            print("  https://www.docker.com/products/docker-desktop  — і запусти знову.")
+            return False
+
+    else:  # Linux / other
+        if which("curl"):
+            is_root = getattr(os, "geteuid", lambda: 1)() == 0
+            prefix = "" if is_root else ("sudo " if which("sudo") else "")
+            _run_soft(f"curl -fsSL https://get.docker.com | {prefix}sh", timeout=1800, shell=True)
+        else:
+            print("⚠ Немає curl — постав Docker: https://docs.docker.com/engine/install/")
+            return False
+
+    # Give a freshly installed/launched daemon time to come up.
+    import time
+    for _ in range(60):
+        if _docker_ready():
+            print("✓ Docker готовий.")
+            return True
+        time.sleep(2)
+    print("⚠ Docker ще не готовий. Якщо щойно встановився — запусти Docker Desktop "
+          "(або виконай `colima start`) і запусти цей скрипт знову.")
+    return False
+
+
 def ensure_waha():
     """Auto-start a local WAHA server (WhatsApp gateway) in Docker so WhatsApp works
     out of the box — the operator only scans the QR in the dashboard. Non-fatal: if
-    Docker is missing we explain how to get it and continue (WhatsApp just stays
-    offline, everything else works). Disable with WAHA_AUTOSTART=false."""
+    Docker can't be brought up we continue (WhatsApp stays offline, everything else
+    works). Disable with WAHA_AUTOSTART=false."""
     if os.getenv("WAHA_AUTOSTART", "true").lower() != "true":
         return
     waha_url = os.getenv("WAHA_URL", "http://localhost:3000").rstrip("/")
@@ -126,11 +210,8 @@ def ensure_waha():
         print(f"✓ WAHA (WhatsApp) вже працює на {waha_url}")
         return
 
-    from shutil import which
-    if which("docker") is None:
-        print("⚠ WhatsApp: Docker не знайдено — WAHA не запущено.")
-        print("  Встанови Docker Desktop (https://www.docker.com/products/docker-desktop),")
-        print("  тоді WhatsApp підніметься сам. Без нього все інше працює як завжди.")
+    if not ensure_docker():
+        print("⚠ WhatsApp офлайн — Docker недоступний. Усе інше працює як завжди.")
         return
 
     name = os.getenv("WAHA_CONTAINER", "svy_waha")
