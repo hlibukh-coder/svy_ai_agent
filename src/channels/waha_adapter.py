@@ -26,6 +26,28 @@ PUBLIC_URL = os.getenv("PUBLIC_URL", "http://localhost:8000").rstrip("/")
 _WHATSAPP_MAX = 64 * 1024 * 1024  # WAHA/WhatsApp document cap (~64–100MB)
 
 
+def _webhook_base() -> str:
+    """Base URL WAHA uses to call OUR inbound webhook.
+
+    WAHA almost always runs in Docker, where 'localhost' means the container
+    itself — not the host app. So a PUBLIC_URL of http://localhost:8000 is
+    unreachable from inside WAHA and inbound messages silently never arrive.
+    We swap localhost/127.0.0.1 → host.docker.internal (resolves to the host on
+    Docker Desktop, and on Linux when the container is started with
+    --add-host=host.docker.internal:host-gateway, which our launcher does).
+    Override explicitly with WAHA_WEBHOOK_BASE (e.g. a public tunnel or, under
+    docker-compose, the app's service name http://svy_agent:8000).
+    """
+    override = os.getenv("WAHA_WEBHOOK_BASE", "").rstrip("/")
+    if override:
+        return override
+    base = PUBLIC_URL
+    for host in ("localhost", "127.0.0.1"):
+        if base.startswith(f"http://{host}") or base.startswith(f"https://{host}"):
+            return base.replace(host, "host.docker.internal", 1)
+    return base
+
+
 def phone_to_chatid(phone: str) -> str:
     digits = re.sub(r"\D", "", phone or "")
     return f"{digits}@c.us" if digits else (phone or "")
@@ -54,7 +76,7 @@ class WahaAdapter(ChannelAdapter):
         return self._http
 
     def _webhook_url(self) -> str:
-        url = f"{PUBLIC_URL}/webhooks/waha/{self.account_id}"
+        url = f"{_webhook_base()}/webhooks/waha/{self.account_id}"
         if self.webhook_secret:
             url += f"?token={self.webhook_secret}"
         return url

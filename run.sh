@@ -40,11 +40,41 @@ port_pid() { lsof -tiTCP:"$PORT" -sTCP:LISTEN 2>/dev/null | head -1 || true; }
 
 is_running() { [ -n "$(port_pid)" ]; }
 
+# ── WAHA (WhatsApp gateway) auto-start у Docker — щоб WhatsApp працював "з коробки".
+# Оператору лишається тільки відсканувати QR у дашборді. Вимкнути: WAHA_AUTOSTART=false.
+waha_up() { curl -fsS -m 2 "${1}/" >/dev/null 2>&1 || curl -fsS -m 2 "${1}/api/sessions" >/dev/null 2>&1; }
+ensure_waha() {
+  [ "${WAHA_AUTOSTART:-true}" = "true" ] || return 0
+  local url="${WAHA_URL:-http://localhost:3000}"; url="${url%/}"
+  if waha_up "$url"; then echo "✓ WAHA (WhatsApp) вже працює на ${url}"; return 0; fi
+  if ! command -v docker >/dev/null 2>&1; then
+    echo "⚠ WhatsApp: Docker не знайдено — WAHA не запущено (усе інше працює)."
+    echo "  Встанови Docker Desktop, і WhatsApp підніметься сам."
+    return 0
+  fi
+  local name="${WAHA_CONTAINER:-svy_waha}" image="${WAHA_IMAGE:-devlikeapro/waha}"
+  local port="${url##*:}"; [[ "$port" =~ ^[0-9]+$ ]] || port=3000
+  if [ -n "$(docker ps -aq -f name=^${name}$ 2>/dev/null)" ]; then
+    echo "▶ Запускаю наявний WAHA-контейнер «${name}»…"; docker start "$name" >/dev/null 2>&1 || true
+  else
+    echo "▶ Піднімаю WAHA у Docker (${image}) на :${port} (перший раз тягне образ ~1–2 хв)…"
+    docker run -d --name "$name" --restart unless-stopped \
+      --add-host host.docker.internal:host-gateway \
+      -p "${port}:3000" "$image" >/dev/null 2>&1 || echo "⚠ Не вдалося запустити WAHA."
+  fi
+  for _ in $(seq 1 90); do
+    if waha_up "$url"; then echo "✓ WAHA піднявся на ${url}"; return 0; fi
+    sleep 1
+  done
+  echo "⚠ WAHA ще не відповів (можливо, тягне образ): docker logs ${name}"
+}
+
 start() {
   if is_running; then
     echo "✓ Сервер уже працює (PID $(port_pid)) на ${BASE}"
     return 0
   fi
+  ensure_waha
   echo "▶ Запуск сервера на ${BASE} (PYTHONUTF8=1)…"
   nohup "$UVICORN" main:app --host "$HOST" --port "$PORT" >> "$LOGFILE" 2>&1 &
   echo $! > "$PIDFILE"

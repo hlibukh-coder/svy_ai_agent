@@ -15,6 +15,7 @@ gracefully" style). `cryptography` ships transitively with Telethon.
 import json
 import logging
 import os
+import secrets
 
 import aiosqlite
 
@@ -163,6 +164,28 @@ async def init_accounts_table():
                  json.dumps({"legacy_session": LEGACY_TG_SESSION})),
             )
             logger.info("[ACCOUNTS] seeded legacy Telegram account id=1")
+
+        # Seed a default WhatsApp (WAHA) account so WhatsApp works out of the box
+        # right after a clone — the operator only has to scan the QR. Points at the
+        # local WAHA server (auto-started by the launcher). Gated by WHATSAPP_AUTOSEED
+        # (default on); if you delete the account and don't want it re-created, set
+        # WHATSAPP_AUTOSEED=false.
+        if os.getenv("WHATSAPP_AUTOSEED", "true").lower() == "true":
+            async with db.execute(
+                "SELECT COUNT(*) FROM accounts WHERE channel='whatsapp'") as cur:
+                n_wa = (await cur.fetchone())[0]
+            if n_wa == 0:
+                creds = {
+                    "base_url": os.getenv("WAHA_URL", "http://localhost:3000").rstrip("/"),
+                    "session_name": "default",
+                    "webhook_secret": secrets.token_urlsafe(16),
+                }
+                await db.execute(
+                    "INSERT INTO accounts (channel, label, status, enabled, credentials, meta) "
+                    "VALUES ('whatsapp', ?, 'disconnected', 1, ?, '{}')",
+                    ("WhatsApp (WAHA)", _enc(creds)),
+                )
+                logger.info("[ACCOUNTS] seeded default WhatsApp (WAHA) account")
         await db.commit()
     logger.info("[ACCOUNTS] table ready")
 

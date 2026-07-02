@@ -101,11 +101,77 @@ def ensure_database():
         print("⚠ Налаштування БД не вдалося — сервер усе одно запуститься (дані можуть бути порожні).")
 
 
+def _http_reachable(url: str, timeout: float = 2.0) -> bool:
+    """True if anything answers at url — any HTTP status counts as 'server is up'."""
+    import urllib.request
+    import urllib.error
+    try:
+        urllib.request.urlopen(url, timeout=timeout)
+        return True
+    except urllib.error.HTTPError:
+        return True  # got an HTTP response (e.g. 404) → the server is running
+    except Exception:
+        return False
+
+
+def ensure_waha():
+    """Auto-start a local WAHA server (WhatsApp gateway) in Docker so WhatsApp works
+    out of the box — the operator only scans the QR in the dashboard. Non-fatal: if
+    Docker is missing we explain how to get it and continue (WhatsApp just stays
+    offline, everything else works). Disable with WAHA_AUTOSTART=false."""
+    if os.getenv("WAHA_AUTOSTART", "true").lower() != "true":
+        return
+    waha_url = os.getenv("WAHA_URL", "http://localhost:3000").rstrip("/")
+    if _http_reachable(waha_url + "/") or _http_reachable(waha_url + "/api/sessions"):
+        print(f"✓ WAHA (WhatsApp) вже працює на {waha_url}")
+        return
+
+    from shutil import which
+    if which("docker") is None:
+        print("⚠ WhatsApp: Docker не знайдено — WAHA не запущено.")
+        print("  Встанови Docker Desktop (https://www.docker.com/products/docker-desktop),")
+        print("  тоді WhatsApp підніметься сам. Без нього все інше працює як завжди.")
+        return
+
+    name = os.getenv("WAHA_CONTAINER", "svy_waha")
+    image = os.getenv("WAHA_IMAGE", "devlikeapro/waha")
+    tail = waha_url.rsplit(":", 1)[-1]
+    port = tail if tail.isdigit() else "3000"
+    try:
+        exists = subprocess.run(["docker", "ps", "-aq", "-f", f"name=^{name}$"],
+                                capture_output=True, text=True).stdout.strip()
+        if exists:
+            print(f"▶ Запускаю наявний WAHA-контейнер «{name}»…")
+            subprocess.run(["docker", "start", name], check=True,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        else:
+            print(f"▶ Піднімаю WAHA (WhatsApp) у Docker: {image} на :{port} "
+                  f"(перший раз тягне образ ~1–2 хв)…")
+            subprocess.run(
+                ["docker", "run", "-d", "--name", name, "--restart", "unless-stopped",
+                 "--add-host", "host.docker.internal:host-gateway",
+                 "-p", f"{port}:3000", image],
+                check=True, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
+    except subprocess.CalledProcessError as e:
+        print(f"⚠ Не вдалося запустити WAHA у Docker ({e}). WhatsApp буде офлайн.")
+        return
+
+    import time
+    for _ in range(90):
+        if _http_reachable(waha_url + "/") or _http_reachable(waha_url + "/api/sessions"):
+            print(f"✓ WAHA піднявся на {waha_url}")
+            return
+        time.sleep(1)
+    print(f"⚠ WAHA ще не відповів на {waha_url} (можливо, ще тягне образ). "
+          f"Перевір: docker logs {name}")
+
+
 def serve(host: str, port: str):
     ensure_python_version()
     ensure_venv_and_deps()
     ensure_env_file()
     ensure_database()
+    ensure_waha()
     print(f"\n▶ Запуск сервера на http://{host}:{port}  (Ctrl+C — зупинити)")
     print(f"  Дашборд:  http://{host}:{port}/dashboard\n")
     # -m uvicorn працює однаково на всіх ОС (не залежить від шляху до консольного скрипта)

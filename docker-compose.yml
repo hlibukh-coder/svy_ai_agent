@@ -4,10 +4,34 @@ services:
   svy_agent:
     build: .
     restart: unless-stopped
+    # Serve the dashboard + API + channels (overrides the stale image CMD).
+    command: ["python", "-m", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
     env_file:
       - .env
+    ports:
+      - "8000:8000"
     volumes:
       - ./data:/app/data
       - ./session:/app/session
     environment:
       - DB_PATH=data/history.db
+      # Under compose the app reaches WAHA by service name, and WAHA reaches the app
+      # back by service name — so WhatsApp works without host.docker.internal.
+      - WAHA_URL=http://waha:3000
+      - WAHA_WEBHOOK_BASE=http://svy_agent:8000
+      - WAHA_AUTOSTART=false   # WAHA is its own service below (no Docker-in-Docker)
+    depends_on:
+      - waha
+
+  # WhatsApp gateway (WAHA). The WhatsApp Web session persists in the named volume,
+  # so a restart keeps you logged in — you scan the QR only once.
+  waha:
+    image: devlikeapro/waha
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    volumes:
+      - waha_sessions:/app/.sessions
+
+volumes:
+  waha_sessions:
