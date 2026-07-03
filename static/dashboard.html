@@ -390,7 +390,7 @@ async function loadAccounts(){
 }
 const ACC_FORMS={
   telegram:`<input class="afi" id="af_label" placeholder="Назва (напр. Telegram #2)">`,
-  whatsapp:`<input class="afi" id="af_label" placeholder="Назва (напр. WhatsApp — продажі)"><input class="afi" id="af_base_url" placeholder="WAHA base_url (http://localhost:3000)"><input class="afi" id="af_api_key" placeholder="API key (необов'язково)"><input class="afi" id="af_session_name" placeholder="session (default)"><div style="font-size:12px;color:#8a93a3;margin-top:4px;max-width:360px">Потрібен запущений WAHA-сервер (<a href="https://waha.devlike.pro" target="_blank" style="color:#2d9be0">waha.devlike.pro</a>). Після «Додати» натисніть «підключити через QR» і скануйте у WhatsApp → Пов'язані пристрої.</div>`,
+  whatsapp:`<input class="afi" id="af_label" placeholder="Назва (напр. WhatsApp — продажі)"><input class="afi" id="af_base_url" placeholder="WAHA base_url (порожньо = http://localhost:3000)"><input class="afi" id="af_api_key" placeholder="API key (необов'язково)"><input class="afi" id="af_session_name" placeholder="session (default)"><div style="font-size:12px;color:#8a93a3;margin-top:4px;max-width:360px">Потрібен запущений WAHA-сервер (<a href="https://waha.devlike.pro" target="_blank" style="color:#2d9be0">waha.devlike.pro</a>). Після «Додати» натисніть «підключити через QR» і скануйте у WhatsApp → Пов'язані пристрої.</div>`,
   gmail:`<input class="afi" id="af_label" placeholder="Назва (напр. Gmail — відділ продажів)"><input class="afi" id="af_user" placeholder="Gmail адреса (you@gmail.com)"><input class="afi" id="af_password" type="password" placeholder="App Password (16 символів, без пробілів)"><div style="font-size:12px;color:#8a93a3;margin-top:4px;max-width:360px">Gmail вимагає <b>пароль застосунку</b> (App Password), не звичайний пароль: увімкніть 2FA → <a href="https://myaccount.google.com/apppasswords" target="_blank" style="color:#2d9be0">myaccount.google.com/apppasswords</a> → створіть пароль для «Пошта». Хости imap/smtp.gmail.com підставляться автоматично. AI відповідатиме на листи з цієї скриньки.</div>`,
   email:`<input class="afi" id="af_label" placeholder="Назва"><input class="afi" id="af_imap_host" placeholder="IMAP host"><input class="afi" id="af_imap_port" placeholder="IMAP port (993)"><input class="afi" id="af_smtp_host" placeholder="SMTP host"><input class="afi" id="af_smtp_port" placeholder="SMTP port (465)"><input class="afi" id="af_user" placeholder="E-mail / логін"><input class="afi" id="af_password" type="password" placeholder="Пароль / App Password">`,
   viber:`<input class="afi" id="af_label" placeholder="Назва"><input class="afi" id="af_bot_token" placeholder="Viber bot token">`,
@@ -409,7 +409,7 @@ async function addAccount(){
   let ch=sel;
   const label=_v('af_label')||(sel==='gmail'?'Gmail':(CH_LABEL[ch]||ch));let creds={};
   if(sel==='gmail'){ch='email';creds={imap_host:'imap.gmail.com',imap_port:993,smtp_host:'smtp.gmail.com',smtp_port:465,user:_v('af_user'),password:(_v('af_password')||'').replace(/\s+/g,''),use_ssl:true,from_name:'СВЮ.КЛУБ'};}
-  else if(ch==='whatsapp')creds={base_url:_v('af_base_url'),api_key:_v('af_api_key'),session_name:_v('af_session_name')||'default'};
+  else if(ch==='whatsapp')creds={base_url:_v('af_base_url')||'http://localhost:3000',api_key:_v('af_api_key'),session_name:_v('af_session_name')||'default'};
   else if(ch==='email')creds={imap_host:_v('af_imap_host'),imap_port:Number(_v('af_imap_port')||993),smtp_host:_v('af_smtp_host'),smtp_port:Number(_v('af_smtp_port')||465),user:_v('af_user'),password:_v('af_password'),use_ssl:true};
   else if(ch==='viber')creds={bot_token:_v('af_bot_token')};
   else if(ch==='elevenlabs')creds={api_key:_v('af_api_key'),agent_id:_v('af_agent_id')};
@@ -515,7 +515,7 @@ async function openChat(id){
     const head=`<div style="display:flex;align-items:center;gap:8px;padding:14px 18px;border-bottom:1px solid #eef0f4"><b>${esc(cl.name||cl.phone||'Чат')}</b> <span style="color:#9aa3b2;font-size:12px">${esc(cl.phone||'')} ${esc(cl.company||'')}</span> ${chBadge(d.channel,d.account_label)}${replyBtn}${toggle}</div>`;
     const body=`<div class="msgs">${(d.messages||[]).map(m=>`<div class="m ${m.role}">${esc(m.content).replace(/\n/g,'<br>')}</div>`).join('')||'<div class="muted">Порожньо</div>'}</div>`;
     const cmdBar=`<div style="display:flex;gap:8px;padding:10px 14px;border-top:1px solid #eef0f4;background:#f6f4ff"><input id="agentCmd" placeholder="⚡ Команда агенту: напр. «виставь КП на DIN 933, 5000 шт, по 1.25 грн»" onkeydown="if(event.key==='Enter'){event.preventDefault();sendAgentCommand('${id}')}" style="flex:1;border:1px solid #c3b6f0;border-radius:7px;padding:9px 11px;font-size:13px"><button class="btn" style="background:#5b34d6" onclick="sendAgentCommand('${id}')">⚡ Виконати</button></div><div id="cmdOut" style="padding:0 14px 8px;font-size:12px;color:#5b34d6;background:#f6f4ff"></div>`;
-    const bar=`<div style="display:flex;gap:8px;padding:10px 14px;border-top:1px solid #eef0f4"><input id="opMsg" placeholder="Написати клієнту як менеджер…" onkeydown="if(event.key==='Enter'){event.preventDefault();sendOperatorMsg('${id}')}" style="flex:1;border:1px solid #d8dce4;border-radius:7px;padding:9px 11px;font-size:13px"><button class="btn" onclick="sendOperatorMsg('${id}')">Надіслати</button></div>`;
+    const bar=`<div style="display:flex;gap:8px;padding:10px 14px;border-top:1px solid #eef0f4"><input type="file" id="opFile" multiple style="display:none" onchange="sendOperatorFile('${id}')"><button id="opAttach" title="Надіслати файл: PDF, фото, документ… (текст у полі стане підписом)" onclick="document.getElementById('opFile').click()" style="border:1px solid #d8dce4;background:#fff;border-radius:7px;padding:9px 12px;font-size:15px;cursor:pointer">📎</button><input id="opMsg" placeholder="Написати клієнту як менеджер…" onkeydown="if(event.key==='Enter'){event.preventDefault();sendOperatorMsg('${id}')}" style="flex:1;border:1px solid #d8dce4;border-radius:7px;padding:9px 11px;font-size:13px"><button class="btn" onclick="sendOperatorMsg('${id}')">Надіслати</button></div>`;
     document.getElementById('conv').innerHTML=head+body+cmdBar+bar;
     const b=document.querySelector('#conv .msgs');if(b)b.scrollTop=b.scrollHeight;
   }catch(e){document.getElementById('conv').innerHTML='<div class="muted">Помилка</div>'}
@@ -527,6 +527,23 @@ async function sendOperatorMsg(id){
   try{await j('/api/chat/'+id+'/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:t})});
     inp.value='';await openChat(id);
   }catch(e){alert('Помилка надсилання: '+e);inp.disabled=false}
+}
+
+async function sendOperatorFile(id){
+  const fi=document.getElementById('opFile');if(!fi||!fi.files.length)return;
+  const files=[...fi.files];fi.value='';
+  const btn=document.getElementById('opAttach');const msg=document.getElementById('opMsg');
+  const caption=(msg&&msg.value||'').trim();
+  if(btn){btn.disabled=true;btn.textContent='⏳';}
+  try{
+    for(let i=0;i<files.length;i++){
+      if(btn&&files.length>1)btn.textContent='⏳'+(i+1)+'/'+files.length;
+      const fd=new FormData();fd.append('file',files[i]);fd.append('caption',i===0?caption:'');
+      await j('/api/chat/'+id+'/upload',{method:'POST',body:fd});
+    }
+    if(msg)msg.value='';
+    await openChat(id);
+  }catch(e){alert('Помилка надсилання файлу: '+e);if(btn){btn.disabled=false;btn.textContent='📎';}}
 }
 
 async function toggleChatAI(id,curOn){

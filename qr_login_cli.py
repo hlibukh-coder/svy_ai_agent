@@ -14,7 +14,7 @@ from telethon import TelegramClient
 from telethon.errors import SessionPasswordNeededError
 import qrcode
 
-AID = int(os.getenv("TG_API_ID")); AH = os.getenv("TG_API_HASH")
+from src.tg_app import TG_API_ID as AID, TG_API_HASH as AH
 PW = os.getenv("TG_2FA_PASSWORD", "")
 PNG = "/tmp/tg_qr.png"
 

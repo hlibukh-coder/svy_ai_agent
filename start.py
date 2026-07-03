@@ -80,12 +80,13 @@ def ensure_venv_and_deps():
 
 
 def ensure_env_file():
-    """Перший запуск без .env → копіюємо приклад і попереджаємо заповнити ключі."""
+    """Перший запуск без .env → копіюємо приклад. Telegram app-креди вже в прикладі,
+    тож канали підключаються одразу через QR; ключі BAS/OpenAI/DATABASE_URL — за потреби."""
     env_file, example = ROOT / ".env", ROOT / ".env.example"
     if not env_file.exists() and example.exists():
         env_file.write_bytes(example.read_bytes())
-        print("⚠ Створив .env з .env.example — впишіть туди ключі (BAS, Telegram, DATABASE_URL) "
-              "перед роботою з реальними даними.")
+        print("✓ Створив .env з .env.example — Telegram/WhatsApp працюють одразу (тільки QR). "
+              "Для AI-відповідей і даних БАС впишіть OPENAI_API_KEY / DATABASE_URL.")
 
 
 def ensure_database():

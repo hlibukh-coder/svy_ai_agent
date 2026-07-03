@@ -19,11 +19,8 @@ from telethon.errors import SessionPasswordNeededError
 async def main():
     os.makedirs("session", exist_ok=True)
 
-    client = TelegramClient(
-        "session/svy_agent",
-        int(os.getenv("TG_API_ID")),
-        os.getenv("TG_API_HASH"),
-    )
+    from src.tg_app import TG_API_ID, TG_API_HASH
+    client = TelegramClient("session/svy_agent", TG_API_ID, TG_API_HASH)
 
     await client.connect()
 

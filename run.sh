@@ -35,6 +35,10 @@ BASE="http://${HOST}:${PORT}"
 
 [ -x "$PY" ] || { echo "❌ Немає $PY — створіть venv: python3 -m venv .venv && .venv/bin/pip install -r requirements.txt"; exit 1; }
 
+# Перший запуск без .env → створюємо з .env.example (робочі Telegram app-креди вже
+# всередині — лишається тільки QR; OPENAI_API_KEY/DATABASE_URL за потреби впишіть потім).
+[ -f .env ] || { cp .env.example .env; echo "✓ Створив .env з .env.example (Telegram/WhatsApp працюють одразу — тільки QR)"; }
+
 # PID процесу, що слухає порт (через lsof) — джерело істини, надійніше за pidfile.
 port_pid() { lsof -tiTCP:"$PORT" -sTCP:LISTEN 2>/dev/null | head -1 || true; }
 

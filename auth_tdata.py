@@ -19,8 +19,7 @@ import sys
 from dotenv import load_dotenv
 load_dotenv()
 
-TG_API_ID = int(os.getenv("TG_API_ID", "0"))
-TG_API_HASH = os.getenv("TG_API_HASH", "")
+from src.tg_app import TG_API_ID, TG_API_HASH  # baked-in app creds, env overrides
 TDATA_PATH = os.path.join(os.path.dirname(__file__), "tdata")
 SESSION_PATH = os.path.join(os.path.dirname(__file__), "session", "svy_agent")
 

@@ -7,7 +7,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
@@ -542,6 +542,27 @@ async def api_chat_send_file(chat_id: str, payload: dict):
         raise HTTPException(status_code=404, detail="Документ не знайдено")
     result = await operator_send_file(conv_id, doc["src"], caption=payload.get("caption", ""),
                                       filename=doc["filename"], mimetype=doc["mimetype"])
+    if not result.get("ok"):
+        raise HTTPException(status_code=409, detail=result.get("error", "send failed"))
+    return result
+
+
+@app.post("/api/chat/{chat_id}/upload")
+async def api_chat_upload(chat_id: str, file: UploadFile = File(...), caption: str = Form("")):
+    """Operator uploads an arbitrary file (PDF / photo / document) from the
+    dashboard chat and it is sent into the conversation via its channel adapter."""
+    from src.index import operator_send_file
+    data = await file.read()
+    if not data:
+        raise HTTPException(status_code=400, detail="Порожній файл")
+    if len(data) > 50 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="Файл завеликий (макс. 50 МБ)")
+    import mimetypes
+    mimetype = (file.content_type or "").strip()
+    if not mimetype or mimetype == "application/octet-stream":
+        mimetype = mimetypes.guess_type(file.filename or "")[0] or "application/octet-stream"
+    result = await operator_send_file(chat_id, data, caption=caption,
+                                      filename=file.filename or "file", mimetype=mimetype)
     if not result.get("ok"):
         raise HTTPException(status_code=409, detail=result.get("error", "send failed"))
     return result
