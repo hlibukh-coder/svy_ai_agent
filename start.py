@@ -228,9 +228,11 @@ def _waha_key(envf: dict) -> str:
 
 
 def _waha_platform_args() -> list:
-    """Apple Silicon: devlikeapro/waha has no arm64 build → emulate amd64."""
+    """devlikeapro/waha has no arm64 build → any ARM host (Apple Silicon, Windows
+    on ARM, ARM Linux) must emulate amd64. x86_64 hosts (typical Win11 Pro, Intel
+    Mac, amd64 Linux) run it natively → no flag."""
     import platform
-    if platform.machine().lower() in ("arm64", "aarch64") and sys.platform == "darwin":
+    if platform.machine().lower() in ("arm64", "aarch64"):
         return ["--platform=linux/amd64"]
     return []
 

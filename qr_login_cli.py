@@ -1,13 +1,13 @@
 """Controlled QR login for the agent's Telegram session (session/svy_agent).
 
-Saves the QR as /tmp/tg_qr.png, waits for a scan, finalizes the login and
+Saves the QR PNG to the OS temp dir, waits for a scan, finalizes the login and
 persists the session. Prints a single RESULT line the caller can parse.
 
 Run the server STOPPED during this (so the session file is free). Env:
   QR_TIMEOUT   per-token wait seconds (default: derived from token expiry)
   TG_2FA_PASSWORD  optional cloud password if 2FA is on
 """
-import asyncio, os, sys, datetime
+import asyncio, os, sys, datetime, tempfile
 from dotenv import load_dotenv
 load_dotenv()
 from telethon import TelegramClient
@@ -16,7 +16,7 @@ import qrcode
 
 from src.tg_app import TG_API_ID as AID, TG_API_HASH as AH
 PW = os.getenv("TG_2FA_PASSWORD", "")
-PNG = "/tmp/tg_qr.png"
+PNG = os.path.join(tempfile.gettempdir(), "tg_qr.png")  # cross-platform (Windows too)
 
 
 def render(url: str):
