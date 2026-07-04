@@ -199,14 +199,70 @@ def ensure_docker() -> bool:
     return False
 
 
+def _read_env_file() -> dict:
+    """Parse .env into a dict (start.py doesn't load dotenv itself)."""
+    env_file = ROOT / ".env"
+    out = {}
+    if env_file.exists():
+        for line in env_file.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            k, _, v = line.partition("=")
+            out[k.strip()] = v.strip()
+    return out
+
+
+def _waha_key(envf: dict) -> str:
+    """Stable WAHA_API_KEY: the new WAHA image regenerates a key on every start
+    unless pinned → the saved WhatsApp login would 'expire'. Read it from .env,
+    else generate one and append so it persists across restarts (mirror run.sh)."""
+    key = os.getenv("WAHA_API_KEY") or envf.get("WAHA_API_KEY", "")
+    if not key:
+        import secrets
+        key = secrets.token_hex(16)
+        env_file = ROOT / ".env"
+        with env_file.open("a", encoding="utf-8") as fh:
+            fh.write(f"\nWAHA_API_KEY={key}\n")
+    return key
+
+
+def _waha_platform_args() -> list:
+    """Apple Silicon: devlikeapro/waha has no arm64 build → emulate amd64."""
+    import platform
+    if platform.machine().lower() in ("arm64", "aarch64") and sys.platform == "darwin":
+        return ["--platform=linux/amd64"]
+    return []
+
+
+def _container_env_val(name: str, key: str) -> str:
+    """Read one env var baked into an existing container (for drift detection)."""
+    try:
+        out = subprocess.run(
+            ["docker", "inspect", "--format",
+             "{{range .Config.Env}}{{println .}}{{end}}", name],
+            capture_output=True, text=True).stdout
+        for line in out.splitlines():
+            if line.startswith(key + "="):
+                return line.split("=", 1)[1]
+    except Exception:
+        pass
+    return ""
+
+
 def ensure_waha():
     """Auto-start a local WAHA server (WhatsApp gateway) in Docker so WhatsApp works
     out of the box — the operator only scans the QR in the dashboard. Non-fatal: if
     Docker can't be brought up we continue (WhatsApp stays offline, everything else
-    works). Disable with WAHA_AUTOSTART=false."""
+    works). Disable with WAHA_AUTOSTART=false.
+
+    Mirrors run.sh: NOWEB engine (WEBJS/Chromium crash-loops under amd64 emulation),
+    pinned WAHA_API_KEY, session volume, and container recreate on engine/key drift."""
     if os.getenv("WAHA_AUTOSTART", "true").lower() != "true":
         return
-    waha_url = os.getenv("WAHA_URL", "http://localhost:3000").rstrip("/")
+    envf = _read_env_file()
+    waha_url = (os.getenv("WAHA_URL") or envf.get("WAHA_URL")
+                or "http://localhost:3000").rstrip("/")
     if _http_reachable(waha_url + "/") or _http_reachable(waha_url + "/api/sessions"):
         print(f"✓ WAHA (WhatsApp) вже працює на {waha_url}")
         return
@@ -217,20 +273,39 @@ def ensure_waha():
 
     name = os.getenv("WAHA_CONTAINER", "svy_waha")
     image = os.getenv("WAHA_IMAGE", "devlikeapro/waha")
+    engine = (os.getenv("WHATSAPP_DEFAULT_ENGINE")
+              or envf.get("WHATSAPP_DEFAULT_ENGINE") or "NOWEB")
+    key = _waha_key(envf)
+    plat = _waha_platform_args()
     tail = waha_url.rsplit(":", 1)[-1]
     port = tail if tail.isdigit() else "3000"
     try:
         exists = subprocess.run(["docker", "ps", "-aq", "-f", f"name=^{name}$"],
                                 capture_output=True, text=True).stdout.strip()
+        # Recreate a stale container whose engine/key differs (e.g. an old WEBJS one
+        # that crash-loops on Apple Silicon). Session lives in the svy_waha_data volume.
+        if exists:
+            drift = (_container_env_val(name, "WHATSAPP_DEFAULT_ENGINE") != engine
+                     or _container_env_val(name, "WAHA_API_KEY") != key)
+            if drift:
+                print("▶ Перестворюю WAHA-контейнер (двигун/ключ змінились)…")
+                subprocess.run(["docker", "rm", "-f", name],
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                exists = ""
         if exists:
             print(f"▶ Запускаю наявний WAHA-контейнер «{name}»…")
             subprocess.run(["docker", "start", name], check=True,
                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         else:
-            print(f"▶ Піднімаю WAHA (WhatsApp) у Docker: {image} на :{port} "
+            print(f"▶ Піднімаю WAHA (WhatsApp) у Docker: {image}, двигун {engine}"
+                  f"{' ' + plat[0] if plat else ''} на :{port} "
                   f"(перший раз тягне образ ~1–2 хв)…")
             subprocess.run(
                 ["docker", "run", "-d", "--name", name, "--restart", "unless-stopped",
+                 *plat,
+                 "-e", f"WAHA_API_KEY={key}",
+                 "-e", f"WHATSAPP_DEFAULT_ENGINE={engine}",
+                 "-v", "svy_waha_data:/app/.sessions",
                  "--add-host", "host.docker.internal:host-gateway",
                  "-p", f"{port}:3000", image],
                 check=True, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
@@ -241,10 +316,10 @@ def ensure_waha():
     import time
     for _ in range(90):
         if _http_reachable(waha_url + "/") or _http_reachable(waha_url + "/api/sessions"):
-            print(f"✓ WAHA піднявся на {waha_url}")
+            print(f"✓ WAHA піднявся на {waha_url} (QR у дашборді → Налаштування)")
             return
         time.sleep(1)
-    print(f"⚠ WAHA ще не відповів на {waha_url} (можливо, ще тягне образ). "
+    print(f"⚠ WAHA ще не відповів на {waha_url} (можливо, ще тягне образ під емуляцією). "
           f"Перевір: docker logs {name}")
 
 
