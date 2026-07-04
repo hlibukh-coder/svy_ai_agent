@@ -191,32 +191,46 @@ class TelegramAdapter(ChannelAdapter):
         except Exception as e:
             logger.error(f"[TG:{self.account_id}] on_outgoing error: {e}")
 
-    async def _backfill_names(self) -> None:
-        """One-shot after connect: resolve real Telegram names/phones for
-        conversations whose contact card is empty (they display as 'ID 123…')."""
+    async def _backfill_names(self, only_missing: bool = True) -> int:
+        """Resolve real Telegram names/phones for conversations that still show as
+        'ID …'. Uses iter_dialogs() — which returns full entities (name + phone +
+        access_hash) — instead of get_entity(int(id)), which FAILS on a bare numeric
+        id when the session has no cached access_hash (e.g. a session copied to
+        another machine — the exact reason names weren't filling in). Returns the
+        number of contacts updated. Requires the account to be connected."""
         from src import context
+        if not self.client:
+            return 0
         try:
-            convs = await context.telegram_convs_without_name(self.account_id)
+            if only_missing:
+                need = {str(context.parse_conv_id(c)[2])
+                        for c in await context.telegram_convs_without_name(self.account_id)}
+                if not need:
+                    return 0
+            else:
+                need = None  # refresh every dialog
             fixed = 0
-            for conv_id in convs:
-                _, _, peer = context.parse_conv_id(conv_id)
-                try:
-                    ent = await self.client.get_entity(int(peer))
-                except (ValueError, TypeError):
+            async for dialog in self.client.iter_dialogs(limit=None):
+                ent = dialog.entity
+                if not isinstance(ent, User):
                     continue
-                except Exception:
-                    continue  # deleted account / privacy — leave as ID
+                did = str(getattr(ent, "id", ""))
+                if need is not None and did not in need:
+                    continue
                 name = _display_name(ent)
                 phone = getattr(ent, "phone", "") or ""
                 if phone and not phone.startswith("+"):
                     phone = f"+{phone}"
                 if name or phone:
-                    await context.upsert_contact_profile(conv_id, name=name, phone=phone)
+                    await context.upsert_contact_profile(
+                        f"telegram:{self.account_id}:{did}", name=name, phone=phone)
                     fixed += 1
-            if convs:
-                logger.info(f"[TG:{self.account_id}] contact names backfilled: {fixed}/{len(convs)}")
+            logger.info(f"[TG:{self.account_id}] contact names backfilled: {fixed}"
+                        f"{('/' + str(len(need))) if need is not None else ''}")
+            return fixed
         except Exception as e:
             logger.error(f"[TG:{self.account_id}] name backfill error: {e}")
+            return 0
 
     # ── outbound ─────────────────────────────────────────────────────────────
     @staticmethod

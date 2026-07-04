@@ -568,6 +568,33 @@ async def api_chat_upload(chat_id: str, file: UploadFile = File(...), caption: s
     return result
 
 
+@app.post("/api/accounts/{account_id}/refresh-names")
+async def api_account_refresh_names(account_id: int):
+    """Resolve real Telegram contact names for chats still shown as 'ID …'.
+    Needs the account connected (we ask Telegram via iter_dialogs)."""
+    from src.channels import registry
+    from src import accounts
+    acct = await accounts.get_account(account_id)
+    if not acct:
+        raise HTTPException(status_code=404, detail="account not found")
+    if acct["channel"] != "telegram":
+        raise HTTPException(status_code=400, detail="only telegram")
+    ad = registry.get("telegram", account_id)
+    client = getattr(ad, "client", None) if ad else None
+    authed = False
+    if client is not None:
+        try:
+            authed = await client.is_user_authorized()
+        except Exception:
+            authed = False
+    if not authed:
+        raise HTTPException(status_code=409,
+                            detail="Telegram не підключено — спочатку підключіть через QR "
+                                   "(Налаштування → Підключити через QR)")
+    fixed = await ad._backfill_names(only_missing=False)
+    return {"ok": True, "updated": fixed}
+
+
 @app.get("/api/stats/by-channel")
 async def api_stats_by_channel():
     from src import stats

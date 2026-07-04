@@ -507,12 +507,29 @@ function renderChatList(){
       accs.map(a=>{const n=chats.filter(c=>acctKey(c)===a.key).length;const nm=(CH_LABEL[a.channel]||a.channel)+(a.label?' · '+a.label:(' #'+a.account_id));return `<option value="${a.key}" ${chatAcctFilter===a.key?'selected':''}>${esc(nm)} (${n})</option>`;}).join('')+
       `</select></div>`;
   }else if(chatAcctFilter){chatAcctFilter='';}
+  // Кнопка «оновити імена» — коли є Telegram-чати, показані як «Контакт 12345…».
+  const hasTg=chats.some(c=>(c.channel||'telegram')==='telegram');
+  const namesBtn=hasTg?`<div style="padding:6px 10px"><button onclick="refreshNames(this)" style="width:100%;border:1px solid #2d6fe0;color:#2d6fe0;background:#fff;border-radius:7px;padding:6px;font-size:12px;font-weight:600;cursor:pointer" title="Підтягнути справжні імена контактів із Telegram (потрібне підключення)">🔄 Оновити імена контактів</button></div>`:'';
   const list=chats.filter(c=>!chatAcctFilter||acctKey(c)===chatAcctFilter);
   const body=list.length?list.map(c=>{
-    const nm=c.name||c.phone||('ID '+c.chat_id);
+    const nm=c.name||c.phone||('Контакт '+String(c.chat_id).split(':').pop());
     return `<div class="ci ${c.chat_id===cur?'active':''}" onclick="openChat('${c.chat_id}')"><div class="av">${esc((nm[0]||'?')).toUpperCase()}</div><div style="flex:1;min-width:0"><div class="nm">${esc(nm)}</div><div class="pv">${esc((c.last_msg||'').substring(0,40))}</div><div style="margin-top:4px">${chBadge(c.channel,c.account_label)}</div></div></div>`;
   }).join(''):'<div class="muted">Діалогів немає</div>';
-  el.innerHTML=filter+body;
+  el.innerHTML=filter+namesBtn+body;
+}
+async function refreshNames(btn){
+  const tgAccs=[...new Set(chats.filter(c=>(c.channel||'telegram')==='telegram').map(c=>c.account_id))];
+  if(!tgAccs.length){alert('Немає Telegram-акаунтів');return;}
+  let old='';if(btn){old=btn.textContent;btn.disabled=true;btn.textContent='🔄 Оновлюю…';}
+  let total=0;const errs=[];
+  for(const id of tgAccs){
+    try{const r=await j('/api/accounts/'+id+'/refresh-names',{method:'POST'});total+=r.updated||0;}
+    catch(e){errs.push(String(e).replace(/[{}"]/g,'').slice(0,140));}
+  }
+  if(btn){btn.disabled=false;btn.textContent=old;}
+  if(errs.length)alert('Не вдалося оновити:\n'+errs.join('\n')+'\n\nПідключіть Telegram у «Налаштування» → «Підключити через QR».');
+  else alert('Готово. Оновлено імен: '+total);
+  await loadChats();
 }
 async function openChat(id){
   cur=id;loadChats();

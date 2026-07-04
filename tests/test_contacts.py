@@ -53,6 +53,43 @@ async def test_router_fills_name_in_manual_mode(tmp_path, monkeypatch):
     assert hist and hist[-1]["content"] == "Добрий день"
 
 
+async def test_backfill_names_via_iter_dialogs(tmp_path, monkeypatch):
+    """Backfill must resolve names from iter_dialogs (reliable) and fill only the
+    ID-only chats, keying by the entity id — not a fragile get_entity(int(id))."""
+    await _fresh_db(tmp_path, monkeypatch)
+    # two telegram:1 chats with no contact name yet
+    await context.save_message(conv_id="telegram:1:111", role="user", content="привіт")
+    await context.save_message(conv_id="telegram:1:222", role="user", content="є болти?")
+
+    # entities are SimpleNamespace in the test → make isinstance(ent, User) pass
+    monkeypatch.setattr("src.channels.telegram_adapter.User", SimpleNamespace)
+
+    ad = object.__new__(TelegramAdapter)
+    ad.account_id = 1
+
+    class _Dlg:
+        def __init__(self, ent): self.entity = ent
+
+    class _Client:
+        def iter_dialogs(self, limit=None):
+            async def gen():
+                yield _Dlg(SimpleNamespace(id=111, first_name="Іван", last_name="Петренко",
+                                           username="ip", phone="380501112233"))
+                yield _Dlg(SimpleNamespace(id=222, first_name="Оля", last_name="",
+                                           username="", phone=None))
+                yield _Dlg(SimpleNamespace(id=999, first_name="Хтось", last_name="",
+                                           username="", phone=None))  # not in our chats
+            return gen()
+
+    ad.client = _Client()
+    fixed = await ad._backfill_names(only_missing=True)
+    assert fixed == 2
+    a = await context.get_linked_client(conv_id="telegram:1:111")
+    b = await context.get_linked_client(conv_id="telegram:1:222")
+    assert a["name"] == "Іван Петренко" and a["phone"] == "+380501112233"
+    assert b["name"] == "Оля"
+
+
 def test_display_name_variants():
     assert _display_name(SimpleNamespace(first_name="Іван", last_name="Франко",
                                          username="ivan")) == "Іван Франко"
