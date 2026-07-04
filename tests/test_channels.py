@@ -5,7 +5,7 @@ import pytest
 
 from src import accounts, bas, context
 from src.channels import registry, router
-from src.channels.base import InboundMessage
+from src.channels.base import InboundMessage, OutboundResult
 from src.channels.waha_adapter import WahaAdapter, phone_to_chatid, chatid_to_phone
 from src.channels.viber_adapter import ViberAdapter
 
@@ -113,6 +113,110 @@ async def test_waha_webhook_parse_and_dedup():
     assert m.peer == "380501112233@c.us"
     assert m.sender_phone == "+380501112233"
     assert m.text == "є болти?"
+
+
+def test_waha_api_key_falls_back_to_env(monkeypatch):
+    monkeypatch.setenv("WAHA_API_KEY", "envkey123")
+    monkeypatch.setenv("WAHA_URL", "http://waha-host:3000")
+    # account has no api_key/base_url in creds → both come from env
+    ad = WahaAdapter(2, "WA", {"session_name": "default"}, lambda m: None)
+    assert ad.api_key == "envkey123"
+    assert ad.base_url == "http://waha-host:3000"
+    # explicit creds still win over env
+    ad2 = WahaAdapter(2, "WA", {"api_key": "acctkey", "base_url": "http://x"}, lambda m: None)
+    assert ad2.api_key == "acctkey" and ad2.base_url == "http://x"
+
+
+async def test_waha_auto_provision_retries_until_ready(monkeypatch):
+    """start() must keep retrying while WAHA is still booting, then provision a QR."""
+    calls = {"status": 0, "begin": 0}
+    statuses = ["BOOM", "BOOM", "SCAN_QR_CODE"]  # first two raise, then reachable
+
+    ad = WahaAdapter(2, "WA", {"base_url": "http://x", "session_name": "default"}, lambda m: None)
+
+    async def fake_status():
+        i = calls["status"]; calls["status"] += 1
+        if statuses[min(i, len(statuses) - 1)] == "BOOM":
+            raise RuntimeError("connection refused")
+        return "SCAN_QR_CODE"
+
+    async def fake_begin():
+        calls["begin"] += 1
+        return {"status": "waiting", "image": "data:image/png;base64,xx"}
+
+    updates = []
+    async def fake_update(aid, status, err=None):
+        updates.append(status)
+
+    monkeypatch.setattr(ad, "_session_status", fake_status)
+    monkeypatch.setattr(ad, "begin_qr", fake_begin)
+    monkeypatch.setattr("src.channels.waha_adapter.account_manager.update_status", fake_update)
+
+    await ad._auto_provision(attempts=5, delay=0)
+    assert calls["begin"] == 1                 # provisioned exactly once
+    assert calls["status"] >= 3                # retried through the boot failures
+
+
+async def test_waha_qr_poll_auto_restarts_dead_session(monkeypatch):
+    """A FAILED/STOPPED session must be auto-restarted so the QR is always live."""
+    ad = WahaAdapter(2, "WA", {"base_url": "http://x", "session_name": "default"}, lambda m: None)
+    seq = iter(["FAILED", "SCAN_QR_CODE", "SCAN_QR_CODE"])
+    restarted = {"n": 0}
+
+    async def fake_status():
+        try:
+            return next(seq)
+        except StopIteration:
+            return "SCAN_QR_CODE"
+
+    async def fake_restart():
+        restarted["n"] += 1
+
+    async def fake_qr():
+        return "data:image/png;base64,QR"
+
+    monkeypatch.setattr(ad, "_session_status", fake_status)
+    monkeypatch.setattr(ad, "_restart_session", fake_restart)
+    monkeypatch.setattr(ad, "_fetch_qr", fake_qr)
+    monkeypatch.setattr("src.channels.waha_adapter.account_manager.update_status",
+                        lambda *a, **k: _noop())
+
+    res = await ad.qr_poll()
+    assert restarted["n"] == 1           # dead session was kicked
+    assert res["status"] == "waiting" and res["image"] == "data:image/png;base64,QR"
+
+
+async def _noop():
+    return None
+
+
+async def test_waha_send_reply_marks_seen_and_typing(monkeypatch):
+    ad = WahaAdapter(2, "WA", {"base_url": "http://x", "session_name": "default"}, lambda m: None)
+    events = []
+
+    async def fake_seen(peer):
+        events.append(("seen", peer))
+
+    async def fake_typing(peer, on):
+        events.append(("typing", on))
+
+    async def fake_send(peer, text):
+        events.append(("send", text))
+        return OutboundResult(ok=True)
+
+    monkeypatch.setattr(ad, "_send_seen", fake_seen)
+    monkeypatch.setattr(ad, "_typing", fake_typing)
+    monkeypatch.setattr(ad, "send_text", fake_send)
+    monkeypatch.setattr("asyncio.sleep", lambda *_a, **_k: _noop())
+    monkeypatch.setattr("src.index._split_reply", lambda t: [t])
+
+    await ad.send_reply("380@c.us", "Готово")
+    kinds = [e[0] for e in events]
+    assert kinds[0] == "seen"                       # read first
+    assert ("typing", True) in events and ("typing", False) in events
+    assert ("send", "Готово") in events
+    # typing True must come before the send
+    assert events.index(("typing", True)) < events.index(("send", "Готово"))
 
 
 async def test_viber_sleeps_without_token():

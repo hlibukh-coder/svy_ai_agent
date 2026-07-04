@@ -300,7 +300,9 @@ async def send_to_client(phone: str, text: str, channel: str = "telegram",
 
     try:
         if channel == "telegram" and adapter is None:
-            await _tg_client.send_message(entity, reply)  # legacy fallback
+            m = await _tg_client.send_message(entity, reply)  # legacy fallback
+            from src.channels.telegram_adapter import mark_sent
+            mark_sent(m)
         else:
             await adapter.send_reply(peer, reply)
         logger.info(f"[SEND] Sent to {phone} via {channel}: {reply[:80]}")
@@ -335,7 +337,9 @@ async def operator_send(chat_id: str, text: str) -> dict:
         except (TypeError, ValueError):
             p = peer
         try:
-            await _tg_client.send_message(p, text)
+            m = await _tg_client.send_message(p, text)
+            from src.channels.telegram_adapter import mark_sent
+            mark_sent(m)
         except Exception as e:
             logger.error(f"[OPERATOR] send to {conv_id} failed: {e}")
             return {"ok": False, "error": str(e)}

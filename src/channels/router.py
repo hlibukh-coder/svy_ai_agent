@@ -48,6 +48,14 @@ async def route_inbound(msg: InboundMessage, adapter) -> None:
 
     logger.info(f"[IN] conv={conv_id} text={user_text[:80]}")
 
+    # Keep the contact card fresh (name/phone from the channel profile) in EVERY
+    # mode — even when the AI stays silent — so dialogs show real names, not IDs.
+    try:
+        await context.upsert_contact_profile(
+            conv_id, name=msg.sender_name or "", phone=msg.sender_phone or "")
+    except Exception as e:
+        logger.warning(f"[IN] contact upsert failed for {conv_id}: {e}")
+
     # Master switch: agent paused → record but don't reply.
     if not await config.get_value("agent_enabled", True):
         await context.save_message(conv_id=conv_id, role="user", content=user_text)

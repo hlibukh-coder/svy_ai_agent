@@ -313,6 +313,44 @@ async def link_client(chat_id=None, phone: str = "", client_ref_key: str = "",
     logger.info(f"[IDENTITY] Linked conv={cid} phone={phone} client={client_ref_key}")
 
 
+async def upsert_contact_profile(conv_id: str, name: str = "", phone: str = "") -> None:
+    """Fill/refresh the human profile (name/phone) of a conversation WITHOUT
+    touching the BAS link (client_ref_key/email) — safe to call on every inbound.
+    Empty values never overwrite existing ones."""
+    if not (name or phone):
+        return
+    ch, acc, pr = parse_conv_id(conv_id)
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            """
+            INSERT INTO contacts (conv_id, channel, account_id, peer, phone, name)
+            VALUES (?, ?, ?, ?, NULLIF(?, ''), NULLIF(?, ''))
+            ON CONFLICT(conv_id) DO UPDATE SET
+                name  = COALESCE(NULLIF(excluded.name, ''),  contacts.name),
+                phone = COALESCE(NULLIF(excluded.phone, ''), contacts.phone)
+            """,
+            (conv_id, ch, acc, pr, phone or "", name or ""),
+        )
+        await db.commit()
+
+
+async def telegram_convs_without_name(account_id: int) -> list[str]:
+    """Conv_ids of this Telegram account's chats that still display as bare IDs
+    (no contact name) — candidates for the post-connect name backfill."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            """
+            SELECT DISTINCT m.conv_id FROM messages m
+            LEFT JOIN contacts c ON c.conv_id = m.conv_id
+            WHERE m.channel='telegram' AND m.account_id=? AND m.conv_id IS NOT NULL
+              AND (c.name IS NULL OR c.name='')
+            """,
+            (int(account_id),),
+        ) as cur:
+            rows = await cur.fetchall()
+    return [r[0] for r in rows]
+
+
 async def get_all_chats(limit: int = 100, *, channel: str | None = None,
                         account_id: int | None = None) -> list[dict]:
     """Return all conversations sorted by last message time — used by the dashboard."""

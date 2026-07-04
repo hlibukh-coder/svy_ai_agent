@@ -142,7 +142,9 @@ async def _deliver(phone: str, name: str, text: str) -> bool:
         logger.info(f"[SCHEDULER] cannot reach {name} ({phone}) on Telegram — skipped")
         return False
     try:
-        await _tg_client.send_message(entity, text)
+        m = await _tg_client.send_message(entity, text)
+        from src.channels.telegram_adapter import mark_sent
+        mark_sent(m)  # campaign send — don't re-record it as a phone-typed message
         await _save_proactive_message(str(getattr(entity, "id", phone)), text)
         await config.log_event("outbound", f"Відправлено повідомлення: {name}", {"phone": phone})
         logger.info(f"[SCHEDULER] sent to {name} ({phone})")

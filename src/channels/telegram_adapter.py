@@ -28,6 +28,30 @@ ESCALATION_CHAT_ID = os.getenv("ESCALATION_CHAT_ID", "")
 
 _TWO_GB = 2 * 1024 * 1024 * 1024
 
+# Message ids sent PROGRAMMATICALLY (AI reply / operator / campaigns / escalation).
+# The outgoing-event handler skips these so only messages typed by the owner from
+# the phone/Telegram app get recorded as "human wrote directly".
+from collections import deque
+_sent_ids: deque = deque(maxlen=500)
+
+
+def mark_sent(*messages) -> None:
+    """Register message(s) returned by Telethon send_* as programmatic."""
+    for m in messages:
+        if isinstance(m, (list, tuple)):
+            mark_sent(*m)
+            continue
+        mid = getattr(m, "id", None)
+        if mid is not None:
+            _sent_ids.append(mid)
+
+
+def _display_name(ent) -> str:
+    """Human name of a Telegram user entity: 'First Last', else @username."""
+    full = " ".join(x for x in (getattr(ent, "first_name", "") or "",
+                                getattr(ent, "last_name", "") or "") if x).strip()
+    return full or (getattr(ent, "username", "") or "")
+
 
 def _qr_svg(url: str) -> str:
     import qrcode
@@ -46,6 +70,7 @@ class TelegramAdapter(ChannelAdapter):
         self.client: TelegramClient | None = None
         self._qr = None
         self._lock = asyncio.Lock()
+        self._me_id: int | None = None
 
     # ── identity / session ───────────────────────────────────────────────────
     def _is_legacy(self) -> bool:
@@ -81,13 +106,17 @@ class TelegramAdapter(ChannelAdapter):
         module globals + proactive scheduler."""
         self.client = client
         client.add_event_handler(self._on_event, events.NewMessage(incoming=True))
+        client.add_event_handler(self._on_outgoing, events.NewMessage(outgoing=True))
         try:
             me = await client.get_me()
+            self._me_id = me.id
             await account_manager.update_account(
                 self.account_id, meta={"name": me.first_name, "phone": f"+{me.phone}"})
         except Exception:
             pass
         await account_manager.update_status(self.account_id, "authorized")
+        # Resolve real names for old conversations that still show as bare IDs.
+        asyncio.create_task(self._backfill_names())
 
         # Persist the StringSession for non-legacy accounts (legacy uses its file).
         if not self._is_legacy() and isinstance(client.session, StringSession):
@@ -121,25 +150,92 @@ class TelegramAdapter(ChannelAdapter):
             phone = ""
             if sender.phone:
                 phone = sender.phone if str(sender.phone).startswith("+") else f"+{sender.phone}"
+            text = (event.raw_text or "").strip()
+            if not text and getattr(event.message, "media", None):
+                # client sent a photo/file with no caption — must still show in the chat
+                text = "[фото]" if getattr(event.message, "photo", None) else "[файл]"
             msg = InboundMessage(
                 channel="telegram", account_id=self.account_id, peer=str(event.chat_id),
-                text=(event.raw_text or "").strip(),
-                sender_phone=phone, sender_name=getattr(sender, "first_name", "") or "",
+                text=text,
+                sender_phone=phone, sender_name=_display_name(sender),
                 external_id=str(event.id),
             )
             await self._on_inbound(msg)
         except Exception as e:
             logger.error(f"[TG:{self.account_id}] on_event error: {e}")
 
+    async def _on_outgoing(self, event) -> None:
+        """Messages the OWNER sends from the phone/Telegram app (not via the agent):
+        record them so the dashboard shows the full conversation, and pause the AI
+        in that chat — a human is clearly handling it. Programmatic sends are
+        filtered out via the mark_sent registry."""
+        try:
+            if not event.is_private:
+                return
+            if event.id in _sent_ids:
+                return  # sent by AI/operator/campaign through this app
+            if self._me_id and event.chat_id == self._me_id:
+                return  # saved messages (chat with self)
+            if MANAGER_TG_ID and event.chat_id == MANAGER_TG_ID:
+                return  # escalation chat with the manager
+            text = (event.raw_text or "").strip()
+            if not text and getattr(event.message, "media", None):
+                text = "[фото]" if getattr(event.message, "photo", None) else "[файл]"
+            if not text:
+                return
+            from src import context
+            conv_id = f"telegram:{self.account_id}:{event.chat_id}"
+            await context.save_message(conv_id=conv_id, role="assistant", content=text)
+            await context.set_chat_ai_paused(conv_id=conv_id, paused=True)
+            logger.info(f"[TG:{self.account_id}] phone-sent message recorded → {conv_id}")
+        except Exception as e:
+            logger.error(f"[TG:{self.account_id}] on_outgoing error: {e}")
+
+    async def _backfill_names(self) -> None:
+        """One-shot after connect: resolve real Telegram names/phones for
+        conversations whose contact card is empty (they display as 'ID 123…')."""
+        from src import context
+        try:
+            convs = await context.telegram_convs_without_name(self.account_id)
+            fixed = 0
+            for conv_id in convs:
+                _, _, peer = context.parse_conv_id(conv_id)
+                try:
+                    ent = await self.client.get_entity(int(peer))
+                except (ValueError, TypeError):
+                    continue
+                except Exception:
+                    continue  # deleted account / privacy — leave as ID
+                name = _display_name(ent)
+                phone = getattr(ent, "phone", "") or ""
+                if phone and not phone.startswith("+"):
+                    phone = f"+{phone}"
+                if name or phone:
+                    await context.upsert_contact_profile(conv_id, name=name, phone=phone)
+                    fixed += 1
+            if convs:
+                logger.info(f"[TG:{self.account_id}] contact names backfilled: {fixed}/{len(convs)}")
+        except Exception as e:
+            logger.error(f"[TG:{self.account_id}] name backfill error: {e}")
+
     # ── outbound ─────────────────────────────────────────────────────────────
+    @staticmethod
+    def _send_error(e: Exception) -> str:
+        # AUTH_KEY_UNREGISTERED = сесію розлогінено (Telegram деавторизував пристрій)
+        if "key is not registered" in str(e).lower():
+            return ("Telegram не підключено (сесію розлогінено) — "
+                    "Налаштування → «Підключити через QR», відскануйте телефоном")
+        return str(e)
+
     async def send_text(self, peer: str, text: str) -> OutboundResult:
         if not self.client:
             return OutboundResult(ok=False, error="telegram not connected")
         try:
-            await self.client.send_message(int(peer), text)
+            m = await self.client.send_message(int(peer), text)
+            mark_sent(m)
             return OutboundResult(ok=True)
         except Exception as e:
-            return OutboundResult(ok=False, error=str(e))
+            return OutboundResult(ok=False, error=self._send_error(e))
 
     async def send_file(self, peer, file, caption="", filename="", mimetype="") -> OutboundResult:
         if not self.client:
@@ -150,11 +246,12 @@ class TelegramAdapter(ChannelAdapter):
                 f = io.BytesIO(file)
                 f.name = filename or "file"
             force_doc = not (mimetype or "").startswith("image/")
-            await self.client.send_file(int(peer), f, caption=caption or None,
-                                        force_document=force_doc)
+            m = await self.client.send_file(int(peer), f, caption=caption or None,
+                                            force_document=force_doc)
+            mark_sent(m)
             return OutboundResult(ok=True)
         except Exception as e:
-            return OutboundResult(ok=False, error=str(e))
+            return OutboundResult(ok=False, error=self._send_error(e))
 
     async def send_reply(self, peer: str, reply: str) -> None:
         """Several short messages with typing indicators, like a real manager."""
@@ -171,7 +268,8 @@ class TelegramAdapter(ChannelAdapter):
                 except Exception:
                     pass
             try:
-                await self.client.send_message(pid, part)
+                m = await self.client.send_message(pid, part)
+                mark_sent(m)
             except Exception as e:
                 logger.error(f"[TG:{self.account_id}] send part failed: {e}")
 

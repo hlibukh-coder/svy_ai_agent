@@ -518,7 +518,9 @@ async def _send_escalation(reason: str, summary: str, sender_phone: str, conv: d
         return
     peer = _escalation_peer or "me"
     try:
-        await _tg_client.send_message(peer, text)
+        m = await _tg_client.send_message(peer, text)
+        from src.channels.telegram_adapter import mark_sent
+        mark_sent(m)  # escalation ping — not a phone-typed client message
         logger.info(f"[ESCALATION] Sent to {peer}")
     except Exception as e:
         logger.error(f"[ESCALATION] Failed: {e}")

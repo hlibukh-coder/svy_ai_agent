@@ -46,7 +46,31 @@ is_running() { [ -n "$(port_pid)" ]; }
 
 # ── WAHA (WhatsApp gateway) auto-start у Docker — щоб WhatsApp працював "з коробки".
 # Оператору лишається тільки відсканувати QR у дашборді. Вимкнути: WAHA_AUTOSTART=false.
-waha_up() { curl -fsS -m 2 "${1}/" >/dev/null 2>&1 || curl -fsS -m 2 "${1}/api/sessions" >/dev/null 2>&1; }
+# WAHA відповідає (навіть 401 без ключа) = сервер піднявся. -f падає на 401, тож
+# перевіряємо код: будь-яка HTTP-відповідь (не 000) означає, що WAHA слухає порт.
+waha_up() {
+  local code; code="$(curl -s -o /dev/null -w '%{http_code}' -m 2 "${1}/" 2>/dev/null || echo 000)"
+  [ "$code" != "000" ]
+}
+
+# Стабільний WAHA_API_KEY: новий образ WAHA генерує новий ключ на кожен старт, якщо
+# його не задати → збережена в акаунті авторизація «протухає». Тримаємо ключ у .env.
+ensure_waha_key() {
+  local key; key="$(grep -E '^WAHA_API_KEY=' .env 2>/dev/null | head -1 | cut -d= -f2-)"
+  if [ -z "$key" ]; then
+    key="$(LC_ALL=C tr -dc 'a-f0-9' </dev/urandom 2>/dev/null | head -c 32)"
+    [ -z "$key" ] && key="$("$PY" -c 'import secrets;print(secrets.token_hex(16))' 2>/dev/null)"
+    # drop any empty WAHA_API_KEY= line, then append the generated one
+    grep -vE '^WAHA_API_KEY=$' .env > .env.tmp 2>/dev/null && mv .env.tmp .env
+    printf 'WAHA_API_KEY=%s\n' "$key" >> .env
+  fi
+  echo "$key"
+}
+
+# Apple Silicon: образ devlikeapro/waha не має arm64-збірки → потрібна емуляція amd64.
+waha_platform() {
+  case "$(uname -m)" in arm64|aarch64) echo "--platform=linux/amd64" ;; *) echo "" ;; esac
+}
 
 # Docker daemon present AND responding.
 docker_ready() { command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; }
@@ -78,26 +102,48 @@ ensure_docker() {
 ensure_waha() {
   [ "${WAHA_AUTOSTART:-true}" = "true" ] || return 0
   local url="${WAHA_URL:-http://localhost:3000}"; url="${url%/}"
-  if waha_up "$url"; then echo "✓ WAHA (WhatsApp) вже працює на ${url}"; return 0; fi
+  local name="${WAHA_CONTAINER:-svy_waha}" image="${WAHA_IMAGE:-devlikeapro/waha}"
+  local engine="${WHATSAPP_DEFAULT_ENGINE:-NOWEB}"
+  local key; key="$(ensure_waha_key)"
+  local plat; plat="$(waha_platform)"
+  local port="${url##*:}"; [[ "$port" =~ ^[0-9]+$ ]] || port=3000
+
   if ! ensure_docker; then
+    if waha_up "$url"; then echo "✓ WAHA вже працює на ${url}"; return 0; fi
     echo "⚠ WhatsApp офлайн — Docker недоступний. Усе інше працює."
     return 0
   fi
-  local name="${WAHA_CONTAINER:-svy_waha}" image="${WAHA_IMAGE:-devlikeapro/waha}"
-  local port="${url##*:}"; [[ "$port" =~ ^[0-9]+$ ]] || port=3000
-  if [ -n "$(docker ps -aq -f name=^${name}$ 2>/dev/null)" ]; then
+
+  # Пересоздаємо контейнер, якщо його двигун/ключ/платформа не збігаються з бажаними
+  # (напр. старий WEBJS-контейнер, що падав на Apple Silicon). Сесія WhatsApp живе у
+  # томі svy_waha_data → перескан QR потрібен лише коли дійсно змінюємо налаштування.
+  local cid; cid="$(docker ps -aq -f name=^${name}$ 2>/dev/null)"
+  if [ -n "$cid" ]; then
+    local cur_engine cur_key
+    cur_engine="$(docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$name" 2>/dev/null | grep -E '^WHATSAPP_DEFAULT_ENGINE=' | cut -d= -f2-)"
+    cur_key="$(docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$name" 2>/dev/null | grep -E '^WAHA_API_KEY=' | cut -d= -f2-)"
+    if [ "$cur_engine" != "$engine" ] || [ "$cur_key" != "$key" ]; then
+      echo "▶ Перестворюю WAHA-контейнер (двигун/ключ змінились: ${cur_engine:-?}→${engine})…"
+      docker rm -f "$name" >/dev/null 2>&1 || true
+      cid=""
+    fi
+  fi
+
+  if [ -n "$cid" ]; then
     echo "▶ Запускаю наявний WAHA-контейнер «${name}»…"; docker start "$name" >/dev/null 2>&1 || true
   else
-    echo "▶ Піднімаю WAHA у Docker (${image}) на :${port} (перший раз тягне образ ~1–2 хв)…"
-    docker run -d --name "$name" --restart unless-stopped \
+    echo "▶ Піднімаю WAHA у Docker (${image}, двигун ${engine}${plat:+, ${plat}}) на :${port} (перший раз тягне образ ~1–2 хв)…"
+    docker run -d --name "$name" --restart unless-stopped ${plat} \
+      -e WAHA_API_KEY="$key" -e WHATSAPP_DEFAULT_ENGINE="$engine" \
+      -v svy_waha_data:/app/.sessions \
       --add-host host.docker.internal:host-gateway \
-      -p "${port}:3000" "$image" >/dev/null 2>&1 || echo "⚠ Не вдалося запустити WAHA."
+      -p "${port}:3000" "$image" >/dev/null 2>&1 || echo "⚠ Не вдалося запустити WAHA (docker logs ${name})."
   fi
   for _ in $(seq 1 90); do
-    if waha_up "$url"; then echo "✓ WAHA піднявся на ${url}"; return 0; fi
+    if waha_up "$url"; then echo "✓ WAHA піднявся на ${url} (QR у дашборді → Налаштування)"; return 0; fi
     sleep 1
   done
-  echo "⚠ WAHA ще не відповів (можливо, тягне образ): docker logs ${name}"
+  echo "⚠ WAHA ще не відповів (можливо, тягне образ під емуляцією): docker logs ${name}"
 }
 
 start() {
