@@ -568,6 +568,27 @@ async def api_chat_upload(chat_id: str, file: UploadFile = File(...), caption: s
     return result
 
 
+@app.post("/api/compose")
+async def api_compose(payload: dict):
+    """Start a NEW conversation to a phone number and send the first message.
+    Body: {channel, account_id, phone, text}. Returns the created conv_id."""
+    from src.index import operator_compose
+    channel = (payload.get("channel") or "whatsapp").strip()
+    account_id = payload.get("account_id")
+    if account_id in (None, ""):
+        # default to the first enabled account of that channel
+        from src import accounts as _acc
+        accs = [a for a in await _acc.list_accounts(channel=channel) if a["enabled"]]
+        if not accs:
+            raise HTTPException(status_code=409, detail=f"{channel}: немає підключеного акаунта")
+        account_id = accs[0]["id"]
+    result = await operator_compose(channel, int(account_id),
+                                    payload.get("phone", ""), payload.get("text", ""))
+    if not result.get("ok"):
+        raise HTTPException(status_code=409, detail=result.get("error", "send failed"))
+    return result
+
+
 @app.post("/api/accounts/{account_id}/refresh-names")
 async def api_account_refresh_names(account_id: int):
     """Resolve real Telegram contact names for chats still shown as 'ID …'.

@@ -351,6 +351,56 @@ async def operator_send(chat_id: str, text: str) -> dict:
     return {"ok": True}
 
 
+async def operator_compose(channel: str, account_id: int, phone: str, text: str) -> dict:
+    """Start a NEW conversation to a phone number (no existing chat yet) and send the
+    first operator message — e.g. write to a WhatsApp/Telegram contact from scratch.
+    Returns the created conv_id so the dashboard can open it."""
+    text = (text or "").strip()
+    phone = (phone or "").strip()
+    if not phone:
+        return {"ok": False, "error": "Вкажіть номер телефону"}
+    if not text:
+        return {"ok": False, "error": "Порожнє повідомлення"}
+    from src.channels import registry
+    adapter = registry.get(channel, int(account_id))
+    if adapter is None:
+        return {"ok": False, "error": f"{channel} не підключено"}
+    norm_phone = phone if phone.startswith("+") else f"+{phone.lstrip('+')}"
+
+    if channel == "telegram":
+        # Telegram can't message a raw +phone — resolve it to a user entity first
+        # (imports the contact temporarily). Fails if the number has no Telegram
+        # or its privacy blocks resolution.
+        client = getattr(adapter, "client", None)
+        if client is None:
+            return {"ok": False, "error": "Telegram не підключено"}
+        from src.telegram_utils import resolve_phone_entity
+        ent = await resolve_phone_entity(client, norm_phone)
+        if not ent:
+            return {"ok": False, "error": "Цей номер не знайдено в Telegram (немає акаунта або приватність)"}
+        try:
+            m = await client.send_message(ent, text)
+            from src.channels.telegram_adapter import mark_sent
+            mark_sent(m)
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+        peer = str(getattr(ent, "id", ""))
+        conv_id = f"telegram:{account_id}:{peer}"
+    else:
+        peer = adapter.peer_for_phone(phone)
+        if not peer:
+            return {"ok": False, "error": "Невірний номер телефону"}
+        conv_id = f"{channel}:{account_id}:{peer}"
+        res = await adapter.send_text(peer, text)
+        if not res.ok:
+            return {"ok": False, "error": res.error}
+    await context.save_message(conv_id=conv_id, role="assistant", content=text)
+    await context.upsert_contact_profile(conv_id, phone=norm_phone)
+    await context.set_chat_ai_paused(conv_id=conv_id, paused=True)
+    logger.info(f"[COMPOSE] started {conv_id} to {norm_phone}")
+    return {"ok": True, "conv_id": conv_id}
+
+
 async def operator_send_file(chat_id: str, file, caption: str = "", filename: str = "",
                              mimetype: str = "") -> dict:
     """Operator sends a FILE into a conversation from the dashboard, pausing the AI."""

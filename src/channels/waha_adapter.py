@@ -300,6 +300,13 @@ class WahaAdapter(ChannelAdapter):
                 logger.error(f"[WAHA:{self.account_id}] send part failed: {res.error}")
 
     # ── outbound ─────────────────────────────────────────────────────────────
+    def _friendly_error(self, e: Exception) -> str:
+        s = str(e)
+        # WAHA replies 422 to send* when the session isn't logged in (WORKING).
+        if "422" in s or "not logged" in s.lower() or "status is not" in s.lower():
+            return "WhatsApp не підключено — відскануйте QR у Налаштування"
+        return s
+
     async def send_text(self, peer: str, text: str) -> OutboundResult:
         try:
             r = await self._client().post(
@@ -307,7 +314,7 @@ class WahaAdapter(ChannelAdapter):
             r.raise_for_status()
             return OutboundResult(ok=True)
         except Exception as e:
-            return OutboundResult(ok=False, error=str(e))
+            return OutboundResult(ok=False, error=self._friendly_error(e))
 
     async def send_file(self, peer, file, caption="", filename="", mimetype="") -> OutboundResult:
         try:
@@ -331,4 +338,4 @@ class WahaAdapter(ChannelAdapter):
             r.raise_for_status()
             return OutboundResult(ok=True)
         except Exception as e:
-            return OutboundResult(ok=False, error=str(e))
+            return OutboundResult(ok=False, error=self._friendly_error(e))

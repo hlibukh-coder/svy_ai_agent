@@ -90,6 +90,42 @@ async def test_backfill_names_via_iter_dialogs(tmp_path, monkeypatch):
     assert b["name"] == "Оля"
 
 
+async def test_operator_compose_whatsapp_starts_chat(tmp_path, monkeypatch):
+    """Composing to a phone must send via the adapter and create the conversation."""
+    await _fresh_db(tmp_path, monkeypatch)
+    from src import index
+    from src.channels.base import OutboundResult
+
+    sent = []
+
+    class _WA:
+        def peer_for_phone(self, phone):
+            import re
+            return re.sub(r"\D", "", phone) + "@c.us"
+        async def send_text(self, peer, text):
+            sent.append((peer, text)); return OutboundResult(ok=True)
+
+    monkeypatch.setattr("src.channels.registry.get", lambda ch, aid: _WA() if ch == "whatsapp" else None)
+
+    res = await index.operator_compose("whatsapp", 11, "+380501112233", "Вітаю!")
+    assert res["ok"] is True
+    assert res["conv_id"] == "whatsapp:11:380501112233@c.us"
+    assert sent == [("380501112233@c.us", "Вітаю!")]
+    # conversation now exists with the phone on the contact card
+    hist = await context.load_history(conv_id=res["conv_id"])
+    assert hist and hist[-1]["content"] == "Вітаю!"
+    linked = await context.get_linked_client(conv_id=res["conv_id"])
+    assert linked and linked["phone"] == "+380501112233"
+
+
+async def test_operator_compose_needs_phone_and_text(tmp_path, monkeypatch):
+    await _fresh_db(tmp_path, monkeypatch)
+    from src import index
+    monkeypatch.setattr("src.channels.registry.get", lambda ch, aid: object())
+    assert (await index.operator_compose("whatsapp", 11, "", "hi"))["ok"] is False
+    assert (await index.operator_compose("whatsapp", 11, "+380", ""))["ok"] is False
+
+
 def test_display_name_variants():
     assert _display_name(SimpleNamespace(first_name="Іван", last_name="Франко",
                                          username="ivan")) == "Іван Франко"

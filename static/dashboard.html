@@ -131,7 +131,22 @@
 
   <section class="tab" id="tab-dialogs">
     <div class="dlg">
-      <div class="side" id="chatList"><div class="muted">Завантаження…</div></div>
+      <div style="width:300px;flex-shrink:0;display:flex;flex-direction:column;min-height:0;background:#fff;border:1px solid #e6e9ef;border-radius:12px;overflow:hidden">
+        <div style="padding:8px 10px;border-bottom:1px solid #eef0f4">
+          <button onclick="toggleCompose()" style="width:100%;border:1px solid #2e9e57;color:#2e9e57;background:#fff;border-radius:7px;padding:8px;font-size:13px;font-weight:700;cursor:pointer">✍️ Написати новому</button>
+          <div id="composeBox" style="display:none;margin-top:8px">
+            <select id="composeCh" style="width:100%;margin-bottom:6px;border:1px solid #d8dce4;border-radius:6px;padding:7px;font-size:13px">
+              <option value="whatsapp">WhatsApp</option>
+              <option value="telegram">Telegram</option>
+            </select>
+            <input id="composePhone" placeholder="Номер: +380XXXXXXXXX" style="width:100%;margin-bottom:6px;border:1px solid #d8dce4;border-radius:6px;padding:7px;font-size:13px">
+            <textarea id="composeText" placeholder="Текст повідомлення…" rows="2" style="width:100%;margin-bottom:6px;border:1px solid #d8dce4;border-radius:6px;padding:7px;font-size:13px;resize:vertical"></textarea>
+            <button onclick="sendCompose(this)" class="btn" style="width:100%;background:#2e9e57">Надіслати</button>
+            <div id="composeMsg" style="font-size:12px;margin-top:5px"></div>
+          </div>
+        </div>
+        <div id="chatList" style="flex:1;min-height:0;overflow-y:auto"><div class="muted">Завантаження…</div></div>
+      </div>
       <div class="conv" id="conv"><div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;text-align:center;color:#8a93a3;padding:24px"><div style="font-size:40px;margin-bottom:10px">💬</div><div style="font-size:15px;font-weight:600;color:#5a6472;margin-bottom:6px">Виберіть чат зліва</div><div style="font-size:13px;max-width:280px">Клікніть будь-який діалог у списку — відкриється переписка, а внизу з'явиться поле «Написати клієнту як менеджер…».</div></div></div>
     </div>
   </section>
@@ -516,6 +531,27 @@ function renderChatList(){
     return `<div class="ci ${c.chat_id===cur?'active':''}" onclick="openChat('${c.chat_id}')"><div class="av">${esc((nm[0]||'?')).toUpperCase()}</div><div style="flex:1;min-width:0"><div class="nm">${esc(nm)}</div><div class="pv">${esc((c.last_msg||'').substring(0,40))}</div><div style="margin-top:4px">${chBadge(c.channel,c.account_label)}</div></div></div>`;
   }).join(''):'<div class="muted">Діалогів немає</div>';
   el.innerHTML=filter+namesBtn+body;
+}
+function toggleCompose(){
+  const b=document.getElementById('composeBox');if(!b)return;
+  b.style.display=b.style.display==='none'?'':'none';
+  if(b.style.display==='')document.getElementById('composePhone').focus();
+}
+async function sendCompose(btn){
+  const ch=document.getElementById('composeCh').value;
+  const phone=(document.getElementById('composePhone').value||'').trim();
+  const text=(document.getElementById('composeText').value||'').trim();
+  const msg=document.getElementById('composeMsg');
+  if(!phone||!text){msg.style.color='#e0524d';msg.textContent='Вкажіть номер і текст';return;}
+  btn.disabled=true;msg.style.color='#8a93a3';msg.textContent='Надсилаю…';
+  try{
+    const r=await j('/api/compose',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({channel:ch,phone:phone,text:text})});
+    msg.style.color='#2e9e57';msg.textContent='✓ Надіслано';
+    document.getElementById('composeText').value='';
+    await loadChats();
+    if(r.conv_id)openChat(r.conv_id);
+  }catch(e){msg.style.color='#e0524d';msg.textContent='✗ '+String(e).replace(/[{}"]/g,'').slice(0,160);}
+  btn.disabled=false;
 }
 async function refreshNames(btn){
   const tgAccs=[...new Set(chats.filter(c=>(c.channel||'telegram')==='telegram').map(c=>c.account_id))];
