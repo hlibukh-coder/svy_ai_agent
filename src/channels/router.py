@@ -6,11 +6,35 @@ and replies THROUGH the originating adapter (no Telethon coupling).
 """
 import logging
 
-from src import bas, config, context
+from src import bas, config, context, files
 from src.channels.base import InboundMessage
 from src.prompt import build_system_prompt
 
 logger = logging.getLogger(__name__)
+
+
+async def _store_attachments(msg: InboundMessage) -> list[dict]:
+    """Persist inbound files (photo/document/voice) to local storage so the
+    operator can open/save them from the dashboard."""
+    saved = []
+    for att in msg.attachments:
+        rec = await files.save_attachment(att)
+        if rec:
+            saved.append(rec)
+        else:
+            logger.warning(f"[IN] attachment '{att.filename}' not saved ({msg.conv_id})")
+    return saved
+
+
+async def _save_user_message(msg: InboundMessage, user_text: str, saved: list[dict]) -> None:
+    """One inbound → one message row (+ a row per extra attachment), keeping the
+    provider message id so the operator can react to it later."""
+    await context.save_message(conv_id=msg.conv_id, role="user", content=user_text,
+                               external_id=msg.external_id,
+                               attachment=saved[0] if saved else None)
+    for extra in saved[1:]:
+        await context.save_message(conv_id=msg.conv_id, role="user", content="",
+                                   attachment=extra)
 
 
 async def _resolve_and_link(conv_id: str, phone: str, channel: str, account_id: int,
@@ -46,6 +70,15 @@ async def route_inbound(msg: InboundMessage, adapter) -> None:
     if not user_text and not msg.attachments:
         return
 
+    # Store inbound files first — they must be kept in EVERY mode (paused/manual too).
+    saved_files = await _store_attachments(msg)
+    if saved_files:
+        # The AI (and the history) must know a file arrived, not just its caption.
+        labels = ", ".join(f["filename"] for f in saved_files)
+        kind = "фото" if (saved_files[0].get("mimetype") or "").startswith("image/") else "файл"
+        marker = f"[{kind}: {labels}]"
+        user_text = f"{user_text}\n{marker}".strip() if user_text else marker
+
     logger.info(f"[IN] conv={conv_id} text={user_text[:80]}")
 
     # Keep the contact card fresh (name/phone from the channel profile) in EVERY
@@ -58,20 +91,20 @@ async def route_inbound(msg: InboundMessage, adapter) -> None:
 
     # Master switch: agent paused → record but don't reply.
     if not await config.get_value("agent_enabled", True):
-        await context.save_message(conv_id=conv_id, role="user", content=user_text)
+        await _save_user_message(msg, user_text, saved_files)
         logger.info(f"[IN] agent paused — saved but not replying ({conv_id})")
         return
 
     # Per-conversation human takeover → record but stay silent.
     if await context.is_chat_paused(conv_id=conv_id):
-        await context.save_message(conv_id=conv_id, role="user", content=user_text)
+        await _save_user_message(msg, user_text, saved_files)
         logger.info(f"[IN] conv {conv_id} under human control — AI silent")
         return
 
     # Manual mode: the AI does NOT reply on its own — it answers only when the
     # operator triggers it ("AI, відповісти"). Record the inbound and stay silent.
     if not await config.get_value("auto_reply", True):
-        await context.save_message(conv_id=conv_id, role="user", content=user_text)
+        await _save_user_message(msg, user_text, saved_files)
         logger.info(f"[IN] auto-reply off — saved, awaiting operator trigger ({conv_id})")
         return
 
@@ -121,7 +154,7 @@ async def route_inbound(msg: InboundMessage, adapter) -> None:
     messages.extend(history)
     messages.append({"role": "user", "content": user_text})
 
-    await context.save_message(conv_id=conv_id, role="user", content=user_text)
+    await _save_user_message(msg, user_text, saved_files)
 
     conv = {"conv_id": conv_id, "channel": msg.channel,
             "account_id": msg.account_id, "peer": msg.peer, "phone": phone}

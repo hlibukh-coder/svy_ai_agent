@@ -245,6 +245,28 @@ class WahaAdapter(ChannelAdapter):
             return {"status": "disconnected", "error": str(e)}
 
     # ── inbound webhook ──────────────────────────────────────────────────────
+    async def _fetch_inbound_media(self, p: dict) -> list:
+        """Fetch the media WAHA downloaded for this message (payload.media.url points
+        at the WAHA server; our authed client can read it). Returns [Attachment] or []."""
+        from src.channels.base import Attachment
+        media = p.get("media") or {}
+        url = media.get("url", "")
+        if not url:
+            return []
+        mime = media.get("mimetype") or p.get("mimeType") or ""
+        fname = media.get("filename") or p.get("filename") or ""
+        if not fname:
+            import mimetypes
+            fname = "media" + (mimetypes.guess_extension(mime or "") or "")
+        try:
+            r = await self._client().get(url)  # absolute URL — base_url is ignored
+            r.raise_for_status()
+            return [Attachment(filename=fname, mimetype=mime or "application/octet-stream",
+                               data=r.content)]
+        except Exception as e:
+            logger.error(f"[WAHA:{self.account_id}] media fetch failed: {e}")
+            return []
+
     async def handle_webhook(self, payload: dict) -> None:
         if (payload or {}).get("event") != "message":
             return
@@ -257,12 +279,17 @@ class WahaAdapter(ChannelAdapter):
         peer = p.get("from", "")
         # Mark the incoming chat as read (blue ticks) — like a real manager who saw it.
         await self._send_seen(peer)
+        text = p.get("body", "") or ""
+        attachments = await self._fetch_inbound_media(p)
+        if not text and not attachments and p.get("hasMedia"):
+            # WAHA Core doesn't expose media content (Plus feature) — show a placeholder.
+            text = "[файл: вміст недоступний — WAHA без підтримки медіа]"
         msg = InboundMessage(
             channel="whatsapp", account_id=self.account_id, peer=peer,
-            text=p.get("body", "") or "",
+            text=text,
             sender_phone=chatid_to_phone(peer),
             sender_name=p.get("notifyName", "") or p.get("pushName", "") or "",
-            external_id=external_id, raw=payload,
+            external_id=external_id, attachments=attachments, raw=payload,
         )
         await self._on_inbound(msg)
 
@@ -283,6 +310,18 @@ class WahaAdapter(ChannelAdapter):
 
     def supports_typing(self) -> bool:
         return True
+
+    def supports_reactions(self) -> bool:
+        return True
+
+    async def send_reaction(self, peer: str, external_id: str, emoji: str) -> OutboundResult:
+        try:
+            r = await self._client().put("/api/reaction", json={
+                "session": self.session, "messageId": external_id, "reaction": emoji})
+            r.raise_for_status()
+            return OutboundResult(ok=True)
+        except Exception as e:
+            return OutboundResult(ok=False, error=self._friendly_error(e))
 
     async def send_reply(self, peer: str, reply: str) -> None:
         """Manager-like delivery: mark read, show 'typing…', then send each part —

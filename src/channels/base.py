@@ -128,5 +128,14 @@ class ChannelAdapter(ABC):
     def supports_typing(self) -> bool:
         return False
 
+    def supports_reactions(self) -> bool:
+        return False
+
+    async def send_reaction(self, peer: str, external_id: str, emoji: str) -> OutboundResult:
+        """Put/remove an emoji reaction on the client's message (external_id =
+        provider message id; empty emoji removes). Overridden by channels that
+        support it (Telegram, WhatsApp)."""
+        return OutboundResult(ok=False, error="цей канал не підтримує реакції")
+
     def max_file_bytes(self) -> int:
         return 50 * 1024 * 1024

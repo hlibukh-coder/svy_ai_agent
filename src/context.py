@@ -102,6 +102,14 @@ async def init_db():
             ("channel",    "ALTER TABLE messages ADD COLUMN channel TEXT"),
             ("account_id", "ALTER TABLE messages ADD COLUMN account_id INTEGER"),
             ("conv_id",    "ALTER TABLE messages ADD COLUMN conv_id TEXT"),
+            # provider message id — lets us react to / reference the original message
+            ("external_id", "ALTER TABLE messages ADD COLUMN external_id TEXT"),
+            # reaction WE put on the client's message (👍 ❤️ …), shown in the dashboard
+            ("reaction",   "ALTER TABLE messages ADD COLUMN reaction TEXT"),
+            # inbound/outbound file linked to this message (stored under FILES_DIR)
+            ("file_path",  "ALTER TABLE messages ADD COLUMN file_path TEXT"),
+            ("file_name",  "ALTER TABLE messages ADD COLUMN file_name TEXT"),
+            ("file_mime",  "ALTER TABLE messages ADD COLUMN file_mime TEXT"),
         ):
             if not await _column_exists(db, "messages", col):
                 await db.execute(ddl)
@@ -217,18 +225,45 @@ async def load_history(chat_id=None, limit: int = 20, *, conv_id: str | None = N
 
 async def save_message(chat_id=None, role: str = "", content: str = "", *,
                        conv_id: str | None = None, channel: str | None = None,
-                       account_id: int | None = None, peer: str | None = None):
+                       account_id: int | None = None, peer: str | None = None,
+                       external_id: str = "", attachment: dict | None = None) -> int:
+    """Persist one message; returns its row id. `attachment` is the dict returned
+    by files.save_attachment ({"path","filename","mimetype"})."""
     cid = conv_id or as_conv_id(chat_id)
     ch, acc, pr = parse_conv_id(cid)
     channel = channel or ch
     account_id = account_id if account_id is not None else acc
     peer = peer or pr
+    att = attachment or {}
     async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute(
-            "INSERT INTO messages (chat_id, role, content, channel, account_id, conv_id) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            (peer, role, content, channel, account_id, cid),
+        cur = await db.execute(
+            "INSERT INTO messages (chat_id, role, content, channel, account_id, conv_id, "
+            " external_id, file_path, file_name, file_mime) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (peer, role, content, channel, account_id, cid,
+             external_id or None, att.get("path"), att.get("filename"), att.get("mimetype")),
         )
+        await db.commit()
+        return cur.lastrowid
+
+
+async def get_message(message_id: int) -> dict | None:
+    """One message row by id — used by the reaction and file-download endpoints."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cur = await db.execute(
+            "SELECT id, conv_id, role, content, external_id, reaction, "
+            " file_path, file_name, file_mime FROM messages WHERE id = ?",
+            (int(message_id),),
+        )
+        row = await cur.fetchone()
+    return dict(row) if row else None
+
+
+async def set_message_reaction(message_id: int, emoji: str) -> None:
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("UPDATE messages SET reaction = ? WHERE id = ?",
+                         (emoji or None, int(message_id)))
         await db.commit()
 
 

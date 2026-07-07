@@ -138,6 +138,31 @@ class TelegramAdapter(ChannelAdapter):
         logger.info(f"[TG:{self.account_id}] activated (handler + status)")
 
     # ── inbound ──────────────────────────────────────────────────────────────
+    async def _download_inbound_media(self, message) -> list:
+        """Download the photo/document a client sent into FILES_DIR so the operator
+        can open/save it from the dashboard. Returns [Attachment] or []."""
+        from src import files as file_store
+        from src.channels.base import Attachment
+        if not (getattr(message, "photo", None) or getattr(message, "document", None)):
+            return []  # webpage previews / geo etc. — nothing to download
+        doc = getattr(message, "document", None)
+        size = getattr(doc, "size", 0) if doc else 0
+        if size and size > file_store.MAX_INBOUND_BYTES:
+            logger.warning(f"[TG:{self.account_id}] inbound file too big ({size}b) — skipped")
+            return []
+        try:
+            path = await message.download_media(file=file_store.files_dir())
+            if not path:
+                return []
+            import mimetypes
+            mime = ((getattr(doc, "mime_type", "") if doc else "")
+                    or mimetypes.guess_type(path)[0]
+                    or ("image/jpeg" if getattr(message, "photo", None) else "application/octet-stream"))
+            return [Attachment(filename=os.path.basename(path), mimetype=mime, path=path)]
+        except Exception as e:
+            logger.error(f"[TG:{self.account_id}] media download failed: {e}")
+            return []
+
     async def _on_event(self, event) -> None:
         try:
             sender = await event.get_sender()
@@ -151,14 +176,19 @@ class TelegramAdapter(ChannelAdapter):
             if sender.phone:
                 phone = sender.phone if str(sender.phone).startswith("+") else f"+{sender.phone}"
             text = (event.raw_text or "").strip()
-            if not text and getattr(event.message, "media", None):
-                # client sent a photo/file with no caption — must still show in the chat
+            attachments = await self._download_inbound_media(event.message)
+            contact = getattr(event.message, "contact", None)
+            if contact is not None:
+                text = (text + f"\n[контакт: {getattr(contact, 'first_name', '') or ''} "
+                               f"{getattr(contact, 'phone_number', '') or ''}]").strip()
+            if not text and not attachments and getattr(event.message, "media", None):
+                # media we couldn't download — must still show in the chat
                 text = "[фото]" if getattr(event.message, "photo", None) else "[файл]"
             msg = InboundMessage(
                 channel="telegram", account_id=self.account_id, peer=str(event.chat_id),
                 text=text,
                 sender_phone=phone, sender_name=_display_name(sender),
-                external_id=str(event.id),
+                external_id=str(event.id), attachments=attachments,
             )
             await self._on_inbound(msg)
         except Exception as e:
@@ -287,8 +317,26 @@ class TelegramAdapter(ChannelAdapter):
             except Exception as e:
                 logger.error(f"[TG:{self.account_id}] send part failed: {e}")
 
+    async def send_reaction(self, peer: str, external_id: str, emoji: str) -> OutboundResult:
+        if not self.client:
+            return OutboundResult(ok=False, error="telegram not connected")
+        try:
+            from telethon.tl import functions, types
+            reaction = [types.ReactionEmoji(emoticon=emoji)] if emoji else []
+            await self.client(functions.messages.SendReactionRequest(
+                peer=int(peer), msg_id=int(external_id), reaction=reaction))
+            return OutboundResult(ok=True)
+        except Exception as e:
+            if "REACTION_INVALID" in str(e):
+                return OutboundResult(
+                    ok=False, error="Telegram не приймає цю реакцію — спробуйте 👍 ❤️ 🔥 🎉 🙏")
+            return OutboundResult(ok=False, error=self._send_error(e))
+
     # ── capabilities ─────────────────────────────────────────────────────────
     def supports_typing(self) -> bool:
+        return True
+
+    def supports_reactions(self) -> bool:
         return True
 
     def max_file_bytes(self) -> int:

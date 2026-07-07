@@ -225,6 +225,98 @@ async def test_viber_sleeps_without_token():
     assert res.ok is False and res.error == "viber_no_token"
 
 
+async def test_viber_conversation_started_returns_welcome():
+    ad = ViberAdapter(4, "VB", {"bot_token": "t", "welcome_text": "Привіт!"}, lambda m: None)
+    resp = await ad.handle_webhook({"event": "conversation_started", "user": {"id": "u1"}})
+    assert resp and resp["type"] == "text" and resp["text"] == "Привіт!"
+    # ordinary events return nothing extra
+    assert await ad.handle_webhook({"event": "delivered"}) is None
+
+
+async def test_viber_webhook_media_contact_location():
+    captured = []
+
+    async def on_inbound(msg):
+        captured.append(msg)
+
+    ad = ViberAdapter(4, "VB", {"bot_token": "t"}, on_inbound)
+    await ad.handle_webhook({"event": "message", "message_token": 1,
+                             "sender": {"id": "u1", "name": "Іван"},
+                             "message": {"type": "picture", "media": "https://cdn/x/img",
+                                         "text": "ось фото"}})
+    await ad.handle_webhook({"event": "message", "message_token": 2,
+                             "sender": {"id": "u1", "name": "Іван"},
+                             "message": {"type": "file", "media": "https://cdn/x/f",
+                                         "file_name": "рахунок.pdf", "size": 10}})
+    await ad.handle_webhook({"event": "message", "message_token": 3,
+                             "sender": {"id": "u1", "name": "Іван"},
+                             "message": {"type": "contact",
+                                         "contact": {"name": "Петро", "phone_number": "+380501112233"}}})
+    assert len(captured) == 3
+    pic, doc, contact = captured
+    assert pic.text == "ось фото"
+    assert pic.attachments and pic.attachments[0].url == "https://cdn/x/img"
+    assert pic.attachments[0].mimetype == "image/jpeg"
+    assert doc.attachments[0].filename == "рахунок.pdf"
+    assert doc.attachments[0].mimetype == "application/pdf"
+    assert not contact.attachments and "+380501112233" in contact.text
+
+
+# ── files: inbound storage + outbox ───────────────────────────────────────────
+
+async def test_files_outbox_roundtrip(tmp_path, monkeypatch):
+    from src import files
+    monkeypatch.setattr(files, "FILES_DIR", str(tmp_path / "files"))
+    name = files.outbox_put(b"data", "invoice.pdf")
+    assert name.endswith(".pdf")
+    p = files.outbox_resolve(name)
+    with open(p, "rb") as fh:
+        assert fh.read() == b"data"
+    assert files.outbox_resolve("../" + name) is None  # traversal blocked
+
+
+async def test_router_saves_inbound_file(tmpdb, tmp_path, monkeypatch):
+    """A client file must be stored on disk and linked to the message row (with the
+    provider message id kept for reactions) — in silent/manual mode too."""
+    import aiosqlite
+    from src import files
+    from src.channels.base import Attachment
+    monkeypatch.setattr(files, "FILES_DIR", str(tmp_path / "files"))
+
+    class FakeAdapter:
+        channel = "whatsapp"; account_id = 2
+
+    msg = InboundMessage(
+        channel="whatsapp", account_id=2, peer="5@c.us", text="", external_id="EXT1",
+        attachments=[Attachment(filename="рахунок.pdf", mimetype="application/pdf",
+                                data=b"%PDF-1.4 test")])
+    await router.route_inbound(msg, FakeAdapter())  # auto_reply off by default → silent
+
+    async with aiosqlite.connect(tmpdb) as db:
+        cur = await db.execute(
+            "SELECT id, content, external_id, file_path, file_name, file_mime FROM messages")
+        rows = await cur.fetchall()
+    assert len(rows) == 1
+    mid, content, ext, fpath, fname, fmime = rows[0]
+    assert ext == "EXT1"
+    assert fname == "рахунок.pdf" and fmime == "application/pdf"
+    assert "[файл: рахунок.pdf]" in content
+    p = files.resolve(fpath)
+    with open(p, "rb") as fh:
+        assert fh.read() == b"%PDF-1.4 test"
+
+
+async def test_message_reaction_storage(tmpdb):
+    mid = await context.save_message(conv_id="whatsapp:2:1@c.us", role="user",
+                                     content="hi", external_id="MSG1")
+    row = await context.get_message(mid)
+    assert row["external_id"] == "MSG1" and row["conv_id"] == "whatsapp:2:1@c.us"
+    await context.set_message_reaction(mid, "👍")
+    assert (await context.get_message(mid))["reaction"] == "👍"
+    await context.set_message_reaction(mid, "")
+    assert (await context.get_message(mid))["reaction"] is None
+
+
 # ── router (channel-agnostic core) ────────────────────────────────────────────
 
 async def test_router_dispatch(tmpdb, monkeypatch):

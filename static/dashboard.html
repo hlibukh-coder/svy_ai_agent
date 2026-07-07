@@ -82,8 +82,15 @@
   .ci .nm{font-weight:600;font-size:13px}.ci .pv{font-size:11px;color:#9aa3b2;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:200px}
   .dlg .conv{flex:1;background:#fff;border:1px solid #e6e9ef;border-radius:12px;display:flex;flex-direction:column;overflow:hidden}
   .msgs{flex:1;overflow-y:auto;padding:18px;display:flex;flex-direction:column;gap:9px}
-  .m{max-width:74%;padding:9px 13px;border-radius:14px;font-size:13.5px;line-height:1.45}
+  .m{max-width:74%;padding:9px 13px;border-radius:14px;font-size:13.5px;line-height:1.45;position:relative}
   .m.user{align-self:flex-end;background:#dcf8c6}.m.assistant{align-self:flex-start;background:#f1f3f7}
+  .m .att img{max-width:240px;max-height:240px;border-radius:9px;display:block;margin-top:6px;cursor:zoom-in}
+  .m .att .fl{display:inline-flex;align-items:center;gap:8px;margin-top:6px;background:#fff;border:1px solid #e2e5ea;border-radius:9px;padding:7px 10px;font-size:12.5px}
+  .m .rx{position:absolute;bottom:-10px;right:8px;background:#fff;border:1px solid #e6e9ef;border-radius:10px;padding:0 5px;font-size:12px;box-shadow:0 1px 2px rgba(0,0,0,.08)}
+  .m .rxbar{display:none;position:absolute;top:-32px;right:0;background:#fff;border:1px solid #e2e5ea;border-radius:16px;padding:3px 6px;box-shadow:0 2px 8px rgba(0,0,0,.12);gap:2px;z-index:5;white-space:nowrap}
+  .m.user:hover .rxbar{display:flex}
+  .m .rxbar span{cursor:pointer;padding:1px 3px;font-size:15px;border-radius:6px}
+  .m .rxbar span:hover{background:#eef0f4}
   .m.system{align-self:center;max-width:90%;background:#eaf6f4;color:#0f766e;font-size:12px;text-align:center;border:1px solid #cdeae6}
   .muted{color:#9aa3b2;text-align:center;padding:30px;font-size:13px}
   .chbadge{display:inline-flex;align-items:center;gap:5px;font-size:11px;color:#6b7280;background:#f1f3f7;border-radius:10px;padding:1px 8px;font-weight:500}
@@ -415,7 +422,7 @@ const ACC_FORMS={
   whatsapp:`<input class="afi" id="af_label" placeholder="Назва (напр. WhatsApp — продажі)"><input class="afi" id="af_base_url" placeholder="WAHA base_url (порожньо = http://localhost:3000)"><input class="afi" id="af_api_key" placeholder="API key (необов'язково)"><input class="afi" id="af_session_name" placeholder="session (default)"><div style="font-size:12px;color:#8a93a3;margin-top:4px;max-width:380px">Один акаунт «WhatsApp (WAHA)» вже створено і стартує разом із проєктом — QR з'являється тут автоматично, просто відскануйте у WhatsApp → Пов'язані пристрої. Ця форма — щоб додати <b>ще один</b> номер (свій WAHA-сервер).</div>`,
   gmail:`<input class="afi" id="af_label" placeholder="Назва (напр. Gmail — відділ продажів)"><input class="afi" id="af_user" placeholder="Gmail адреса (you@gmail.com)"><input class="afi" id="af_password" type="password" placeholder="App Password (16 символів, без пробілів)"><div style="font-size:12px;color:#8a93a3;margin-top:4px;max-width:360px">Gmail вимагає <b>пароль застосунку</b> (App Password), не звичайний пароль: увімкніть 2FA → <a href="https://myaccount.google.com/apppasswords" target="_blank" style="color:#2d9be0">myaccount.google.com/apppasswords</a> → створіть пароль для «Пошта». Хости imap/smtp.gmail.com підставляться автоматично. AI відповідатиме на листи з цієї скриньки.</div>`,
   email:`<input class="afi" id="af_label" placeholder="Назва"><input class="afi" id="af_imap_host" placeholder="IMAP host"><input class="afi" id="af_imap_port" placeholder="IMAP port (993)"><input class="afi" id="af_smtp_host" placeholder="SMTP host"><input class="afi" id="af_smtp_port" placeholder="SMTP port (465)"><input class="afi" id="af_user" placeholder="E-mail / логін"><input class="afi" id="af_password" type="password" placeholder="Пароль / App Password">`,
-  viber:`<input class="afi" id="af_label" placeholder="Назва"><input class="afi" id="af_bot_token" placeholder="Viber bot token">`,
+  viber:`<input class="afi" id="af_label" placeholder="Назва (напр. Viber — продажі)"><input class="afi" id="af_bot_token" placeholder="Viber bot token (з partners.viber.com)"><input class="afi" id="af_sender_name" placeholder="Ім'я відправника (СВЮ.КЛУБ)"><input class="afi" id="af_welcome_text" placeholder="Привітання при відкритті чату (необов'язково)"><div style="font-size:12px;color:#8a93a3;margin-top:4px;max-width:380px">Створіть бота на <a href="https://partners.viber.com" target="_blank" style="color:#2d9be0">partners.viber.com</a> і вставте токен. Потрібен публічний HTTPS-адрес сервера (PUBLIC_URL) — вебхук встановиться автоматично при підключенні. Клієнт має першим написати боту (Viber не дозволяє писати першими).</div>`,
   elevenlabs:`<input class="afi" id="af_label" placeholder="Назва (напр. Дзвінки — гаряча лінія)"><input class="afi" id="af_api_key" placeholder="ElevenLabs API key (необов'язково)"><input class="afi" id="af_agent_id" placeholder="Agent ID (необов'язково)"><div style="font-size:12px;color:#8a93a3;margin-top:4px;max-width:340px">Після додавання натисніть «webhook URL» і вставте його в ElevenLabs → Conversational AI → Post-call webhook. Уся інфа по дзвінках піде в «Діалоги».</div>`
 };
 function renderAddForm(){
@@ -433,7 +440,7 @@ async function addAccount(){
   if(sel==='gmail'){ch='email';creds={imap_host:'imap.gmail.com',imap_port:993,smtp_host:'smtp.gmail.com',smtp_port:465,user:_v('af_user'),password:(_v('af_password')||'').replace(/\s+/g,''),use_ssl:true,from_name:'СВЮ.КЛУБ'};}
   else if(ch==='whatsapp')creds={base_url:_v('af_base_url')||'http://localhost:3000',api_key:_v('af_api_key'),session_name:_v('af_session_name')||'default'};
   else if(ch==='email')creds={imap_host:_v('af_imap_host'),imap_port:Number(_v('af_imap_port')||993),smtp_host:_v('af_smtp_host'),smtp_port:Number(_v('af_smtp_port')||465),user:_v('af_user'),password:_v('af_password'),use_ssl:true};
-  else if(ch==='viber')creds={bot_token:_v('af_bot_token')};
+  else if(ch==='viber')creds={bot_token:_v('af_bot_token'),sender_name:_v('af_sender_name'),welcome_text:_v('af_welcome_text')};
   else if(ch==='elevenlabs')creds={api_key:_v('af_api_key'),agent_id:_v('af_agent_id')};
   try{await j('/api/accounts',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({channel:ch,label,credentials:creds})});
     renderAddForm();loadAccounts();
@@ -574,7 +581,21 @@ async function openChat(id){
     const replyBtn=`<button onclick="aiReplyNow('${id}',this)" title="AI складе та надішле відповідь зараз" style="margin-left:auto;border:1px solid #2d6fe0;color:#2d6fe0;background:#fff;border-radius:7px;padding:5px 10px;font-size:12px;font-weight:600;cursor:pointer">🤖 Відповісти AI</button>`;
     const toggle=`<button onclick="toggleChatAI('${id}',${aiOn})" title="Хто відповідає в цьому чаті за замовчуванням" style="border:1px solid ${aiOn?'#2e9e57':'#e0524d'};color:${aiOn?'#2e9e57':'#e0524d'};background:#fff;border-radius:7px;padding:5px 10px;font-size:12px;font-weight:600;cursor:pointer">${aiOn?'🤖 AI відповідає':'🙋 Я відповідаю'}</button>`;
     const head=`<div style="display:flex;align-items:center;gap:8px;padding:14px 18px;border-bottom:1px solid #eef0f4"><b>${esc(cl.name||cl.phone||'Чат')}</b> <span style="color:#9aa3b2;font-size:12px">${esc(cl.phone||'')} ${esc(cl.company||'')}</span> ${chBadge(d.channel,d.account_label)}${replyBtn}${toggle}</div>`;
-    const body=`<div class="msgs">${(d.messages||[]).map(m=>`<div class="m ${m.role}">${esc(m.content).replace(/\n/g,'<br>')}</div>`).join('')||'<div class="muted">Порожньо</div>'}</div>`;
+    // Реакції ставимо лише на повідомлення КЛІЄНТА і лише там, де канал їх підтримує
+    const canReact=(d.channel==='whatsapp'||d.channel==='telegram');
+    const RX=['👍','❤️','🔥','🎉','🙏','😁'];
+    const body=`<div class="msgs">${(d.messages||[]).map(m=>{
+      let att='';
+      if(m.file){
+        att=String(m.file.mime||'').indexOf('image/')===0
+          ?`<div class="att"><a href="${m.file.url}" target="_blank" title="Відкрити у новій вкладці"><img src="${m.file.url}" alt="${esc(m.file.name)}"></a></div>`
+          :`<div class="att"><span class="fl">📎 <a href="${m.file.url}" target="_blank" style="color:#2d6fe0;font-weight:600;text-decoration:none" title="Відкрити">${esc(m.file.name)}</a><a href="${m.file.url}?download=1" title="Зберегти на комп'ютер" style="text-decoration:none">⬇️</a></span></div>`;
+      }
+      const rx=m.reaction?`<span class="rx">${esc(m.reaction)}</span>`:'';
+      const bar=(canReact&&m.role==='user'&&m.external_id)
+        ?`<div class="rxbar">${RX.map(e=>`<span onclick="reactMsg('${id}',${m.id},'${e}')" title="${m.reaction===e?'Прибрати реакцію':'Поставити реакцію'}">${e}</span>`).join('')}</div>`:'';
+      return `<div class="m ${m.role}">${bar}${esc(m.content).replace(/\n/g,'<br>')}${att}${rx}</div>`;
+    }).join('')||'<div class="muted">Порожньо</div>'}</div>`;
     const cmdBar=`<div style="display:flex;gap:8px;padding:10px 14px;border-top:1px solid #eef0f4;background:#f6f4ff"><input id="agentCmd" placeholder="⚡ Команда агенту: напр. «виставь КП на DIN 933, 5000 шт, по 1.25 грн»" onkeydown="if(event.key==='Enter'){event.preventDefault();sendAgentCommand('${id}')}" style="flex:1;border:1px solid #c3b6f0;border-radius:7px;padding:9px 11px;font-size:13px"><button class="btn" style="background:#5b34d6" onclick="sendAgentCommand('${id}')">⚡ Виконати</button></div><div id="cmdOut" style="padding:0 14px 8px;font-size:12px;color:#5b34d6;background:#f6f4ff"></div>`;
     const bar=`<div style="display:flex;gap:8px;padding:10px 14px;border-top:1px solid #eef0f4"><input type="file" id="opFile" multiple style="display:none" onchange="sendOperatorFile('${id}')"><button id="opAttach" title="Надіслати файл: PDF, фото, документ… (текст у полі стане підписом)" onclick="document.getElementById('opFile').click()" style="border:1px solid #d8dce4;background:#fff;border-radius:7px;padding:9px 12px;font-size:15px;cursor:pointer">📎</button><input id="opMsg" placeholder="Написати клієнту як менеджер…" onkeydown="if(event.key==='Enter'){event.preventDefault();sendOperatorMsg('${id}')}" style="flex:1;border:1px solid #d8dce4;border-radius:7px;padding:9px 11px;font-size:13px"><button class="btn" onclick="sendOperatorMsg('${id}')">Надіслати</button></div>`;
     const conv=document.getElementById('conv');
@@ -617,6 +638,12 @@ async function sendOperatorFile(id){
   const fi=document.getElementById('opFile');if(!fi||!fi.files.length)return;
   const files=[...fi.files];fi.value='';
   await sendFilesToChat(id,files);
+}
+
+async function reactMsg(chatId,msgId,emoji){
+  try{await j('/api/chat/'+encodeURIComponent(chatId)+'/react',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message_id:msgId,emoji:emoji})});
+    await openChat(chatId);
+  }catch(e){alert('Не вдалося поставити реакцію: '+String(e).replace(/[{}"]/g,'').slice(0,160))}
 }
 
 async function toggleChatAI(id,curOn){

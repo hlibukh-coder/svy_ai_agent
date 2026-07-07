@@ -43,13 +43,17 @@ async def waha_webhook(account_id: int, request: Request):
 @router.post("/webhooks/viber/{account_id}")
 async def viber_webhook(account_id: int, request: Request):
     # Viber sends a verification POST on set_webhook; we must answer 200 fast.
+    # On conversation_started the adapter returns a welcome-message object that
+    # must go back IN this HTTP response — Viber shows it as the greeting.
     adapter = _verify("viber", account_id, request)
     try:
         payload = await request.json()
     except Exception:
         payload = {}
     try:
-        await adapter.handle_webhook(payload)
+        resp = await adapter.handle_webhook(payload)
+        if resp:
+            return resp
     except Exception as e:
         logger.error(f"[WEBHOOK] viber/{account_id} error: {e}")
     return {"ok": True}

@@ -89,12 +89,23 @@ async def api_chat(chat_id: str):
     # Full history (no limit for dashboard)
     async with aiosqlite.connect(db_path) as db:
         async with db.execute(
-            "SELECT role, content, ts FROM messages WHERE conv_id=? ORDER BY ts ASC",
+            "SELECT id, role, content, ts, external_id, reaction, "
+            " file_path, file_name, file_mime "
+            "FROM messages WHERE conv_id=? ORDER BY ts ASC",
             (conv_id,),
         ) as cur:
             rows = await cur.fetchall()
 
-    messages = [{"role": r[0], "content": r[1], "ts": r[2]} for r in rows]
+    messages = [
+        {
+            "id": r[0], "role": r[1], "content": r[2], "ts": r[3],
+            "external_id": r[4] or "", "reaction": r[5] or "",
+            # file linked to the message → served by GET /api/files/{message_id}
+            "file": ({"name": r[7] or "файл", "mime": r[8] or "",
+                      "url": f"/api/files/{r[0]}"} if r[6] else None),
+        }
+        for r in rows
+    ]
 
     linked = await get_linked_client(conv_id=conv_id)
     client_info = {}
@@ -180,6 +191,72 @@ async def api_chat_toggle_ai(chat_id: str, payload: dict):
     enabled = bool(payload.get("enabled", True))
     await context.set_chat_ai_paused(chat_id, not enabled)
     return {"chat_id": chat_id, "ai_enabled": enabled}
+
+
+class ReactRequest(BaseModel):
+    message_id: int
+    emoji: str = ""
+
+
+@app.post("/api/chat/{chat_id}/react")
+async def api_chat_react(chat_id: str, req: ReactRequest):
+    """Operator puts an emoji reaction on a client's message (WhatsApp/Telegram).
+    Clicking the same emoji again removes the reaction."""
+    from src import context
+    from src.channels import registry
+    conv_id = context.as_conv_id(chat_id)
+    row = await context.get_message(req.message_id)
+    if not row or row["conv_id"] != conv_id:
+        raise HTTPException(status_code=404, detail="Повідомлення не знайдено")
+    if not row.get("external_id"):
+        raise HTTPException(status_code=409,
+                            detail="Для цього повідомлення реакція недоступна (старе повідомлення)")
+    ad = registry.get_by_conv(conv_id)
+    if ad is None:
+        raise HTTPException(status_code=409, detail="Канал не підключено")
+    if not ad.supports_reactions():
+        raise HTTPException(status_code=400, detail="Цей канал не підтримує реакції")
+    _ch, _acc, peer = context.parse_conv_id(conv_id)
+    emoji = (req.emoji or "").strip()
+    if emoji and (row.get("reaction") or "") == emoji:
+        emoji = ""  # same emoji again → remove
+    res = await ad.send_reaction(peer, row["external_id"], emoji)
+    if not res.ok:
+        raise HTTPException(status_code=409, detail=res.error or "Не вдалося поставити реакцію")
+    await context.set_message_reaction(req.message_id, emoji)
+    return {"ok": True, "reaction": emoji}
+
+
+@app.get("/api/files/{message_id}")
+async def api_file(message_id: int, download: int = 0):
+    """Open/save a file linked to a chat message (inbound client file).
+    ?download=1 forces the browser's save dialog instead of inline preview."""
+    from urllib.parse import quote
+    from fastapi.responses import FileResponse
+    from src import context, files as file_store
+    row = await context.get_message(message_id)
+    if not row or not row.get("file_path"):
+        raise HTTPException(status_code=404, detail="Файл не знайдено")
+    path = file_store.resolve(row["file_path"])
+    if not path:
+        raise HTTPException(status_code=404, detail="Файл відсутній на диску")
+    fname = row.get("file_name") or os.path.basename(path)
+    disposition = "attachment" if download else "inline"
+    return FileResponse(
+        path, media_type=row.get("file_mime") or "application/octet-stream",
+        headers={"Content-Disposition": f"{disposition}; filename*=UTF-8''{quote(fname)}"})
+
+
+@app.get("/files/outbox/{name}")
+async def files_outbox(name: str):
+    """Publicly served outbound files for URL-only channels (Viber fetches the
+    file we're sending from here). Names are unguessable uuids."""
+    from fastapi.responses import FileResponse
+    from src import files as file_store
+    path = file_store.outbox_resolve(name)
+    if path is None:
+        raise HTTPException(status_code=404, detail="not found")
+    return FileResponse(path)
 
 
 @app.post("/api/chat/{chat_id}/ai-reply")
