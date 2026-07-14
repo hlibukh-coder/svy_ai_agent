@@ -402,7 +402,9 @@ async def get_all_chats(limit: int = 100, *, channel: str | None = None,
             SELECT m.conv_id,
                    MAX(m.ts) AS last_ts,
                    (SELECT content FROM messages m2
-                    WHERE m2.conv_id = m.conv_id ORDER BY ts DESC LIMIT 1) AS last_msg,
+                    WHERE m2.conv_id = m.conv_id ORDER BY ts DESC, id DESC LIMIT 1) AS last_msg,
+                   (SELECT role FROM messages m2
+                    WHERE m2.conv_id = m.conv_id ORDER BY ts DESC, id DESC LIMIT 1) AS last_role,
                    c.name, c.phone, c.client_ref_key,
                    m.channel, m.account_id, a.label AS account_label
             FROM messages m
@@ -423,12 +425,14 @@ async def get_all_chats(limit: int = 100, *, channel: str | None = None,
             "conv_id": r[0],
             "last_ts": r[1],
             "last_msg": r[2],
-            "name": r[3],
-            "phone": r[4],
-            "client_ref_key": r[5],
-            "channel": r[6] or "telegram",
-            "account_id": r[7],
-            "account_label": r[8],
+            # who wrote last: "user" (client) → chat is unanswered; "assistant" → we replied
+            "last_role": r[3],
+            "name": r[4],
+            "phone": r[5],
+            "client_ref_key": r[6],
+            "channel": r[7] or "telegram",
+            "account_id": r[8],
+            "account_label": r[9],
         }
         for r in rows
     ]

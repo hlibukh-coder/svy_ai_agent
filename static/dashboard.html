@@ -97,6 +97,21 @@
   .chbadge i{width:8px;height:8px;border-radius:50%;flex-shrink:0}
   .acctfilter{padding:8px 10px;border-bottom:1px solid #eef0f4;position:sticky;top:0;background:#fff;z-index:1}
   .acctfilter select{width:100%;border:1px solid #d8dce4;border-radius:7px;padding:7px 9px;font-size:12.5px;background:#fff}
+  /* chat-list search + sort */
+  .chatctl{padding:8px 10px;border-bottom:1px solid #eef0f4;background:#fff}
+  .chatctl input.search{width:100%;border:1px solid #d8dce4;border-radius:7px;padding:7px 9px;font-size:12.5px}
+  .sortbar{display:flex;gap:6px;margin-top:7px}
+  .sortbar button{flex:1;border:1px solid #d8dce4;background:#fff;color:#667;border-radius:7px;padding:5px 4px;font-size:12px;font-weight:600;cursor:pointer}
+  .sortbar button.on{border-color:#f5a623;color:#b06a00;background:#fff7ea}
+  .ci.unans{background:#fffaf0}.ci.unans:hover{background:#fff3df}
+  .undot{width:8px;height:8px;border-radius:50%;background:#f5a623;display:inline-block;flex-shrink:0;margin-left:5px;vertical-align:middle}
+  /* in-conversation search */
+  .convsearch{display:flex;align-items:center;gap:6px;padding:8px 14px;border-bottom:1px solid #eef0f4;background:#fbfcfe}
+  .convsearch input{flex:1;border:1px solid #d8dce4;border-radius:7px;padding:7px 9px;font-size:13px}
+  .convsearch button{border:1px solid #d8dce4;background:#fff;border-radius:7px;padding:6px 9px;font-size:13px;cursor:pointer;line-height:1}
+  .convsearch .cnt{font-size:12px;color:#8a93a3;white-space:nowrap;min-width:52px;text-align:center}
+  .m.hit{outline:2px solid #f5a623}
+  .m.hitcur{background:#ffe08a!important;outline:2px solid #e8920a}
 </style>
 </head>
 <body>
@@ -303,6 +318,7 @@ function switchTab(t){
   if(t==='settings')loadConfig();
 }
 function esc(s){return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}
+function escA(s){return esc(s).replace(/"/g,'&quot;')}
 function fmtTime(ts){if(!ts)return'';try{const d=new Date(ts.replace(' ','T')+(ts.includes('+')?'':'Z'));return d.toLocaleTimeString('uk-UA',{hour:'2-digit',minute:'2-digit'})}catch{return String(ts).substring(11,16)}}
 async function j(u,o){const r=await fetch(u,o);if(!r.ok)throw await r.text();return r.json()}
 
@@ -512,7 +528,7 @@ async function saveConfig(){
   }catch(e){m.textContent='✗ Помилка: '+e;m.style.color='#e0524d';}
 }
 
-let chats=[],cur=null,chatAcctFilter='';
+let chats=[],cur=null,chatAcctFilter='',curSig=null,chatSearch='',chatSort='recent',convSearch='',convHits=[],convIdx=0;
 async function loadChats(){
   try{chats=await j('/api/chats');renderChatList();
   }catch(e){document.getElementById('chatList').innerHTML='<div class="muted">Помилка</div>'}
@@ -532,12 +548,36 @@ function renderChatList(){
   // Кнопка «оновити імена» — коли є Telegram-чати, показані як «Контакт 12345…».
   const hasTg=chats.some(c=>(c.channel||'telegram')==='telegram');
   const namesBtn=hasTg?`<div style="padding:6px 10px"><button onclick="refreshNames(this)" style="width:100%;border:1px solid #2d6fe0;color:#2d6fe0;background:#fff;border-radius:7px;padding:6px;font-size:12px;font-weight:600;cursor:pointer" title="Підтягнути справжні імена контактів із Telegram (потрібне підключення)">🔄 Оновити імена контактів</button></div>`:'';
-  const list=chats.filter(c=>!chatAcctFilter||acctKey(c)===chatAcctFilter);
+
+  // «Неотвечений» чат = останнім написав КЛІЄНТ (роль 'user'), а ми ще не відповіли.
+  const isUnans=c=>c.last_role==='user';
+  let list=chats.filter(c=>!chatAcctFilter||acctKey(c)===chatAcctFilter);
+  const unansCount=list.filter(isUnans).length;
+
+  // Пошук чату по імені / телефону / останньому повідомленню.
+  const q=(chatSearch||'').trim().toLowerCase();
+  if(q)list=list.filter(c=>((c.name||'')+' '+(c.phone||'')+' '+(c.last_msg||'')).toLowerCase().includes(q));
+  // Сортування / фільтр: «Останні» (як прийшло з сервера) або лише «Неотвечені».
+  if(chatSort==='unans')list=list.filter(isUnans);
+
+  const ctl=`<div class="chatctl">
+    <input class="search" id="chatSearch" placeholder="🔍 Пошук чату: ім'я, телефон…" value="${escA(chatSearch)}" oninput="chatSearch=this.value;renderChatList()">
+    <div class="sortbar">
+      <button class="${chatSort==='recent'?'on':''}" onclick="chatSort='recent';renderChatList()">Останні</button>
+      <button class="${chatSort==='unans'?'on':''}" onclick="chatSort='unans';renderChatList()">Неотвечені${unansCount?' ('+unansCount+')':''}</button>
+    </div>
+  </div>`;
+
   const body=list.length?list.map(c=>{
     const nm=c.name||c.phone||('Контакт '+String(c.chat_id).split(':').pop());
-    return `<div class="ci ${c.chat_id===cur?'active':''}" onclick="openChat('${c.chat_id}')"><div class="av">${esc((nm[0]||'?')).toUpperCase()}</div><div style="flex:1;min-width:0"><div class="nm">${esc(nm)}</div><div class="pv">${esc((c.last_msg||'').substring(0,40))}</div><div style="margin-top:4px">${chBadge(c.channel,c.account_label)}</div></div></div>`;
-  }).join(''):'<div class="muted">Діалогів немає</div>';
-  el.innerHTML=filter+namesBtn+body;
+    const un=isUnans(c);
+    return `<div class="ci ${c.chat_id===cur?'active':''} ${un?'unans':''}" onclick="openChat('${c.chat_id}')"><div class="av">${esc((nm[0]||'?')).toUpperCase()}</div><div style="flex:1;min-width:0"><div class="nm">${esc(nm)}${un?'<span class="undot" title="Клієнт написав останнім — ще не відповіли"></span>':''}</div><div class="pv">${esc((c.last_msg||'').substring(0,40))}</div><div style="margin-top:4px">${chBadge(c.channel,c.account_label)}</div></div></div>`;
+  }).join(''):('<div class="muted">'+((q||chatSort==='unans')?'Нічого не знайдено':'Діалогів немає')+'</div>');
+
+  const hadFocus=document.activeElement&&document.activeElement.id==='chatSearch';
+  el.innerHTML=ctl+filter+namesBtn+body;
+  // Повертаємо фокус і каретку в поле пошуку після перемальовування списку.
+  if(hadFocus){const s=document.getElementById('chatSearch');if(s){s.focus();const v=s.value;s.value='';s.value=v;}}
 }
 function toggleCompose(){
   const b=document.getElementById('composeBox');if(!b)return;
@@ -574,9 +614,28 @@ async function refreshNames(btn){
   else alert('Готово. Оновлено імен: '+total);
   await loadChats();
 }
-async function openChat(id){
-  cur=id;loadChats();
-  try{const d=await j('/api/chat/'+id);const cl=d.client||{};
+async function openChat(id,opts){
+  opts=opts||{};
+  // refresh = фонове оновлення ВЖЕ відкритого чату (кожні 5с). Клік = звичайне відкриття.
+  const refresh=opts.refresh&&id===cur;
+  if(!refresh){cur=id;convSearch='';convHits=[];convIdx=0;curSig=null;}
+  loadChats();
+  // Запам'ятовуємо позицію прокрутки, щоб фонове оновлення не смикало екран донизу.
+  const prevBox=document.querySelector('#conv .msgs');
+  let restoreTop=null;   // null → лишитись унизу (нові повідомлення видно)
+  if(refresh&&prevBox){
+    const atBottom=prevBox.scrollHeight-prevBox.scrollTop-prevBox.clientHeight<80;
+    if(!atBottom)restoreTop=prevBox.scrollTop;   // оператор читає історію → тримаємо місце
+  }
+  try{const d=await j('/api/chat/'+id);
+    if(id!==cur)return;   // поки чекали відповідь, оператор перемкнув чат
+    const cl=d.client||{};
+    // Підпис видимого стану: якщо при фоновому оновленні нічого не змінилось —
+    // не чіпаємо DOM (нема мерехтіння і не збивається прокрутка).
+    const msgs=d.messages||[];const lastM=msgs[msgs.length-1]||{};
+    const sig=msgs.length+'|'+(lastM.id||'')+'|'+(lastM.content||'').length+'|'+msgs.map(m=>m.reaction||'').join(',')+'|'+(d.ai_paused?1:0)+'|'+(d.channel||'');
+    if(refresh&&sig===curSig)return;
+    curSig=sig;
     const aiOn=!d.ai_paused;
     const replyBtn=`<button onclick="aiReplyNow('${id}',this)" title="AI складе та надішле відповідь зараз" style="margin-left:auto;border:1px solid #2d6fe0;color:#2d6fe0;background:#fff;border-radius:7px;padding:5px 10px;font-size:12px;font-weight:600;cursor:pointer">🤖 Відповісти AI</button>`;
     const toggle=`<button onclick="toggleChatAI('${id}',${aiOn})" title="Хто відповідає в цьому чаті за замовчуванням" style="border:1px solid ${aiOn?'#2e9e57':'#e0524d'};color:${aiOn?'#2e9e57':'#e0524d'};background:#fff;border-radius:7px;padding:5px 10px;font-size:12px;font-weight:600;cursor:pointer">${aiOn?'🤖 AI відповідає':'🙋 Я відповідаю'}</button>`;
@@ -598,8 +657,10 @@ async function openChat(id){
     }).join('')||'<div class="muted">Порожньо</div>'}</div>`;
     const cmdBar=`<div style="display:flex;gap:8px;padding:10px 14px;border-top:1px solid #eef0f4;background:#f6f4ff"><input id="agentCmd" placeholder="⚡ Команда агенту: напр. «виставь КП на DIN 933, 5000 шт, по 1.25 грн»" onkeydown="if(event.key==='Enter'){event.preventDefault();sendAgentCommand('${id}')}" style="flex:1;border:1px solid #c3b6f0;border-radius:7px;padding:9px 11px;font-size:13px"><button class="btn" style="background:#5b34d6" onclick="sendAgentCommand('${id}')">⚡ Виконати</button></div><div id="cmdOut" style="padding:0 14px 8px;font-size:12px;color:#5b34d6;background:#f6f4ff"></div>`;
     const bar=`<div style="display:flex;gap:8px;padding:10px 14px;border-top:1px solid #eef0f4"><input type="file" id="opFile" multiple style="display:none" onchange="sendOperatorFile('${id}')"><button id="opAttach" title="Надіслати файл: PDF, фото, документ… (текст у полі стане підписом)" onclick="document.getElementById('opFile').click()" style="border:1px solid #d8dce4;background:#fff;border-radius:7px;padding:9px 12px;font-size:15px;cursor:pointer">📎</button><input id="opMsg" placeholder="Написати клієнту як менеджер…" onkeydown="if(event.key==='Enter'){event.preventDefault();sendOperatorMsg('${id}')}" style="flex:1;border:1px solid #d8dce4;border-radius:7px;padding:9px 11px;font-size:13px"><button class="btn" onclick="sendOperatorMsg('${id}')">Надіслати</button></div>`;
+    // Пошук у переписці — знайти, про що домовлялись (підсвічує й гортає по збігах).
+    const searchBar=`<div class="convsearch"><input id="convSearch" placeholder="🔍 Знайти в переписці: напр. «ціна», «домовились»…" value="${escA(convSearch)}" oninput="applyConvSearch(true)" onkeydown="if(event.key==='Enter'){event.preventDefault();convSearchStep(event.shiftKey?-1:1)}"><span class="cnt" id="convSearchCnt"></span><button type="button" title="Попередній збіг" onclick="convSearchStep(-1)">▲</button><button type="button" title="Наступний збіг" onclick="convSearchStep(1)">▼</button></div>`;
     const conv=document.getElementById('conv');
-    conv.innerHTML=head+body+cmdBar+bar;
+    conv.innerHTML=head+searchBar+body+cmdBar+bar;
     // Файли можна не тільки через 📎: перетягнути в чат або вставити з буфера (Cmd/Ctrl+V)
     conv.ondragover=e=>{e.preventDefault();conv.style.outline='2px dashed #2d6fe0';};
     conv.ondragleave=()=>{conv.style.outline='';};
@@ -607,8 +668,44 @@ async function openChat(id){
       if(e.dataTransfer&&e.dataTransfer.files.length)sendFilesToChat(id,e.dataTransfer.files);};
     conv.onpaste=e=>{const fs=(e.clipboardData&&e.clipboardData.files)||[];
       if(fs.length){e.preventDefault();sendFilesToChat(id,fs);}};
-    const b=document.querySelector('#conv .msgs');if(b)b.scrollTop=b.scrollHeight;
-  }catch(e){document.getElementById('conv').innerHTML='<div class="muted">Помилка</div>'}
+    const b=document.querySelector('#conv .msgs');
+    if(b){
+      if(restoreTop!=null)b.scrollTop=restoreTop;   // тримаємо місце оператора
+      else b.scrollTop=b.scrollHeight;              // відкриття / був унизу → до нових
+    }
+    if(convSearch)applyConvSearch(false);   // після перемальовування — відновити підсвітку
+  }catch(e){if(id===cur)document.getElementById('conv').innerHTML='<div class="muted">Помилка</div>'}
+}
+
+// ── Пошук у відкритій переписці ──
+function applyConvSearch(resetIdx){
+  const inp=document.getElementById('convSearch');
+  if(inp)convSearch=inp.value;
+  const box=document.querySelector('#conv .msgs');if(!box)return;
+  const cnt=document.getElementById('convSearchCnt');
+  const items=[...box.querySelectorAll('.m')];
+  items.forEach(el=>el.classList.remove('hit','hitcur'));
+  const q=(convSearch||'').trim().toLowerCase();
+  if(!q){convHits=[];convIdx=0;if(cnt)cnt.textContent='';return;}
+  convHits=items.filter(el=>el.textContent.toLowerCase().includes(q));
+  convHits.forEach(el=>el.classList.add('hit'));
+  if(resetIdx)convIdx=0;
+  if(convIdx>=convHits.length)convIdx=0;
+  if(convHits.length)_convFocus();
+  else if(cnt)cnt.textContent='0';
+}
+function _convFocus(){
+  convHits.forEach(el=>el.classList.remove('hitcur'));
+  const el=convHits[convIdx];const cnt=document.getElementById('convSearchCnt');
+  if(!el){if(cnt)cnt.textContent='0';return;}
+  el.classList.add('hitcur');
+  el.scrollIntoView({block:'center'});
+  if(cnt)cnt.textContent=(convIdx+1)+'/'+convHits.length;
+}
+function convSearchStep(dir){
+  if(!convHits.length)return;
+  convIdx=(convIdx+dir+convHits.length)%convHits.length;
+  _convFocus();
 }
 
 async function sendOperatorMsg(id){
@@ -757,7 +854,9 @@ async function stopManual(){
 // True while the operator is typing in either composer (message or agent command),
 // so background refreshes don't wipe the box mid-typing.
 function chatBusy(){
-  return ['opMsg','agentCmd'].some(function(idn){
+  // Поки оператор друкує або щось шукає — фонове оновлення не чіпаємо (щоб не збивати
+  // введення, підсвітку пошуку в переписці та відфільтрований список чатів).
+  return ['opMsg','agentCmd','convSearch','chatSearch'].some(function(idn){
     const el=document.getElementById(idn);
     return el&&(el===document.activeElement||(el.value||'').length>0);
   });
@@ -766,7 +865,7 @@ function refreshActive(){
   const t=document.querySelector('.tab.active');if(!t)return;
   const id=t.id.replace('tab-','');
   if(id==='overview')loadOverview();
-  else if(id==='dialogs'){loadChats();if(cur&&!chatBusy())openChat(cur);}
+  else if(id==='dialogs'){if(!chatBusy()){loadChats();if(cur)openChat(cur,{refresh:true});}}
   else if(id==='campaigns')loadCampaigns();
   refreshAgentState();tgRefreshStatus();
   document.getElementById('updTxt').textContent='оновлено '+new Date().toLocaleTimeString('uk-UA',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
@@ -777,8 +876,8 @@ refreshAgentState();
 tgRefreshStatus();
 refreshActive();
 setInterval(refreshActive,10000);
-// Live-refresh the open chat, but don't clobber what the operator is typing
-setInterval(()=>{if(cur&&!chatBusy())openChat(cur);},5000);
+// Live-refresh the open chat, but don't clobber what the operator is typing/reading
+setInterval(()=>{if(cur&&!chatBusy())openChat(cur,{refresh:true});},5000);
 </script>
 </body>
 </html>
